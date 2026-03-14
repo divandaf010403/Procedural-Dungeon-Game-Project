@@ -1,22 +1,45 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
 public class DungeonCreator : MonoBehaviour
 {
-    public int dungeonWidth, dungeonLength;
-    public int roomWidthMin, roomLengthMin;
+    [Tooltip("Total lebar keseluruhan dari area dungeon yang akan di-generate.")]
+    public int dungeonWidth;
+    [Tooltip("Total panjang keseluruhan dari area dungeon yang akan di-generate.")]
+    public int dungeonLength;
+
+    [Tooltip("Batas minimum lebar untuk partisi ruangan (mencegah ruangan terlalu sempit).")]
+    public int roomWidthMin;
+    [Tooltip("Batas minimum panjang untuk partisi ruangan (mencegah ruangan terlalu pendek).")]
+    public int roomLengthMin;
+
+    [Tooltip("Maksimal iterasi pembagian ruang (BSP). Nilai yang lebih tinggi menghasilkan lebih banyak ruangan dengan ukuran yang lebih kecil.")]
     public int maxIterations;
+
+    [Tooltip("Menentukan lebar jalur lorong (corridor) yang menghubungkan antar ruangan.")]
     public int corridorWidth;
+
+    [Tooltip("Material yang akan diaplikasikan pada 3D mesh lantai ruangan dan lorong.")]
     public Material material;
+
+    [Tooltip("Persentase letak sudut kiri-bawah ruangan di dalam blok partisinya (0.0 - 0.3). Berpengaruh pada variasi varians ruang dari batas kiri bawah.")]
     [Range(0.0f, 0.3f)]
     public float roomBottomCornerModifier;
+
+    [Tooltip("Persentase letak sudut kanan-atas ruangan di dalam blok partisinya (0.7 - 1.0). Berpengaruh pada variasi varians ruang dari batas kanan atas.")]
     [Range(0.7f, 1.0f)]
     public float roomTopCornerMidifier;
+
+    [Tooltip("Margin tambahan atau jarak bebas statis dari dinding ruangan ke batas partisi.")]
     [Range(0, 2)]
     public int roomOffset;
-    public GameObject wallVertical, wallHorizontal;
+
+    [Tooltip("Prefab GameObject untuk dinding dengan orientasi vertikal (menutup jalan horizontal).")]
+    public GameObject wallVertical;
+    [Tooltip("Prefab GameObject untuk dinding dengan orientasi horizontal (menutup jalan vertikal).")]
+    public GameObject wallHorizontal;
     List<Vector3Int> possibleDoorVerticalPosition;
     List<Vector3Int> possibleDoorHorizontalPosition;
     List<Vector3Int> possibleWallHorizontalPosition;

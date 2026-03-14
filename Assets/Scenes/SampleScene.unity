@@ -476,11 +476,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 39afe7a11116e4946b34f408154d6408, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DungeonCreator
-  dungeonWidth: 100
-  dungeonLength: 100
+  dungeonWidth: 300
+  dungeonLength: 300
   roomWidthMin: 25
   roomLengthMin: 25
-  maxIterations: 10
+  maxIterations: 50
   corridorWidth: 5
   material: {fileID: 2100000, guid: 49c3b00a34abf544287694e6abd184f1, type: 2}
   roomBottomCornerModifier: 0.1
