@@ -1,71 +1,115 @@
-# Panduan Penggunaan Advanced Procedural Terrain Generator
+# 🌍 Panduan Setup Terrain
 
-Berikut adalah langkah-langkah detail untuk menggunakan script prosedur terrain tingkat tinggi yang telah dibuat ke dalam Scene Unity Anda. Sistem ini terinspirasi dari **sistem biome generasi dunia nyata & Minecraft 1.18+**, memadukan 8 layer matematika fractal untuk menghasilkan dunia yang 100% acak namun serealistis mungkin.
+Terdapat **2 mode** terrain generation:
 
-## Langkah 1: Persiapan Objek Terrain
-1. Pada jendela **Hierarchy** di Unity, klik kanan dan pilih `3D Object` -> `Terrain`.
-2. Sebuah objek bernama **Terrain** akan muncul di scene Anda. Objek ini sudah memiliki komponen `Terrain` dan `Terrain Collider`.
-
-## Langkah 2: Memasang Script
-1. Pilih objek **Terrain** yang baru saja Anda buat.
-2. Pada jendela **Inspector**, klik tombol `Add Component`.
-3. Cari dan tambahkan script **`Procedural Terrain Manager`**.
-
-## Langkah 3: Mengatur Tekstur (Terrain Layers)
-Sistem ini menggunakan *Splatmap* otomatis berdasarkan ketinggian (*height*) dan kemirigan (*slope*).
-1. Di Inspector pada komponen `Terrain`, klik ikon kuas (Paint Terrain).
-2. Di dropdown *brush*, pilih `Paint Texture`.
-3. Tambahkan tekstur/material Anda pada `Edit Terrain Layers...` -> `Create Layer`. 
-   - *Saran Layer: (0) Pasir/Air, (1) Rumput, (2) Tanah/Batu Jurang, (3) Salju Puncak Gunung*
+| Mode | Cocok Untuk | Ukuran Dunia |
+|------|-------------|-------------|
+| **TerrainPipeline** | Map terbatas, testing | 1000-4000m |
+| **InfiniteTerrainManager** | Open world, Minecraft-style | ♾️ Tak terbatas |
 
 ---
 
-## Langkah 4: Konfigurasi 8 Layer Algoritma Dunia (Inspector)
+## Mode 1: Terrain Pipeline (Map Terbatas)
 
-Rahasia utama dari dunia realistis Anda terletak pada 8 lapis perpaduan Noise matematika di bawah.
-
-### 1. Continentalness (Daratan Dasar)
-Bagian ini mengatur tinggi rendahnya tanah secara makro (skala besar), membentuk "benua" dan "lautan" lebar. 
-- **Base Scale**: Seberapa lebar benua/pulaunya.
-- **Base Height Contribution**: Porsi tinggi keseluruhan dari daratan dasar (`0.3` berarti pinggiran laut dan bukit dasar menggunakan 30% dari total tinggi).
-
-### 1.5 Domain Warping (Distorsi Geografi Organik)
-*Fitur baru yang sangat krusial!* Tanpa ini, noise perlin biasa terlihat kaku dan terkadang membentuk pola grid/garis-garis yang membosankan.
-- **Warp Scale & Strength**: Membengkokkan koordinat di balik layar, sehingga benua, laut, dan pegunungan akan meliuk-liuk, memuntir secara melengkung menghasilkan bentuk kepulauan dan daratan asimetris layaknya dunia nyata. Menghilangkan pola kotak-kotak buatan komputer sepenuhnya!
-
-### 2. Erosion / Plains Mask (Pembatas Dataran Rata)
-Bukannya memotong gunung dengan kaku, sistem ini menggunakan *Noise Masking*.
-- **Plains Threshold**: Area di mana angka erosi bumi jatuh di bawah batas ini akan sepenuhnya menjadi **dataran rata (Plains)** yang hidup (tetap mengikuti turun naiknya *Continentalness*). Sangat ideal untuk membangun desa!
-- **Mask Blend**: Area transisi/lereng di pinggir Plains sebelum menanjak menjadi pegunungan terjal.
-
-### 3. Mountain Details (Pegunungan)
-Gunung-gunung tinggi yang mengerikan *hanya* akan muncul jika area tersebut bukan Plains.
-- **Detail Scale & Octaves**: Detail bebatuan gunung yang kasar.
-- **Mountain Height Contribution**: Porsi tinggi menjulang yang disumbangkan oleh gunung (misal `0.7` atau 70%).
-
-### 4. Plateaus / Mesas (Daratan Tinggi Rata)
-Gunung tidak harus selalu lancip. Sistem ini memotong puncak gunung menjadi rata seperti di film *American Wild West* (Mesa/Plateau).
-- **Enable Plateaus**: Centang untuk mengaktifkan.
-- **Plateau Flatten Threshold**: Batas tinggi minimal di mana puncak gunung akan diratakan layaknya meja raksasa.
-
-### 5. River System (Sungai Pahat Alami)
-Menggunakan modifikasi **Ridged Multifractal** untuk mengubah kurva mulus menjadi tebing berbentuk V panjang yang meliuk-liuk bagai ular.
-- **Inovasi Pahat Pegunungan**: Hebatnya sungai ini, jika ia melewati gunung tinggi, sungai tidak akan mendaki gunung! Ia akan **memahat/membelah gunung tersebut secara paksa ke bawah** hingga selevel dengan tanah dasar (Base Height). Menciptakan tebing sungai (峡谷) yang ikonik secara alami.
-- **River Threshold & Depth**: Mengatur lebar jalur dan kedalaman palung sungai.
-
-### 6. Lake System (Danau Natural)
-Mendeteksi *Low-Frequency Noise Pits* (frekuensi terendah pada titik tertentu) untuk digali menjadi danau/kolam besar di tengah daratan. Berbeda dengan laut lepas, danau ini terbentuk di sela-sela daratan Plains.
-
-### 7. Canyons / Ravines (Jurang Retakan Bumi)
-Pernah melihat jurang sangat dalam yang tiba-tiba membelah bumi? Layer ini menggunakan Ridged matematis yang *sangat tipis (Threshold kecil)* dan *sangat dalam (Depth besar)* dipadukan dengan eksponensial V-Shape untuk merobek dan memotong daratan secara instan.
-
-### 8. Meteor Craters (Kawah Berapi / Meteor)
-Memanfaatkan algoritma *Voronoi - Cellular Sine* pada perlin noise, sistem akan merender lubang kawah bulat yang langka namun nyata.
-- **Matematika Kawah**: Algoritma sinus akan mendorong tanah ke atas membentuk gundukan (Bibir Kawah / `Rim Height`), sebelum akhirnya menukik tajam ke bawah tanah membentuk lubang (Palung / `Crater Depth`).
+### Setup:
+1. Hierarchy → **3D Object → Terrain**
+2. Atur Terrain Settings: Width/Length = `1000-4000`, **Height = `300-600`**
+3. **Add Component → Terrain Pipeline**
+4. Klik **🎲 Generate New Random World**
 
 ---
 
-## Langkah 5: Generate & Eksplorasi!
-1. Scroll ke paling bawah pada script `Procedural Terrain Manager` dan klik **`Generate / Update Terrain`**.
-2. Mainkan angka **Seed** untuk men-generate milyaran tata letak dunia yang 100% unik tanpa henti.
-3. Eksplorasi sungai yang membelah tebing jurang gunung, temukan kawah meteor yang tersembunyi jauh di balik hutan, dan bangun kota Anda di dataran (Plains) mulus atau di atas Mesa (Plateau)!
+## Mode 2: Infinite Terrain Manager (Dunia Tak Terbatas) 🌟
+
+### Langkah 1: Buat Manager Object
+1. Hierarchy → klik kanan → **Create Empty**
+2. Rename menjadi **"WorldManager"** atau nama lain
+3. **Add Component → Infinite Terrain Manager**
+
+### Langkah 2: Buat Player / Camera
+1. Jika belum punya player, buat sementara:
+   - Hierarchy → **3D Object → Capsule** (sebagai player)
+   - Posisikan di **(0, 150, 0)** ← harus di atas terrain!
+2. Drag player/camera ke slot **"Player"** di Inspector InfiniteTerrainManager
+
+### Langkah 3: Hapus Terrain Lama (Jika Ada)
+- Jika ada Terrain object di Hierarchy dari setup sebelumnya, **HAPUS**
+- InfiniteTerrainManager akan membuat Terrain sendiri
+
+### Langkah 4: Atur Parameter
+| Parameter | Default | Penjelasan |
+|-----------|---------|------------|
+| **Chunk Size** | `256` | Ukuran tiap chunk (meter). Lebih besar = lebih lambat generate |
+| **View Distance** | `4` | Berapa chunk terlihat di setiap arah. 4 = grid 9×9 |
+| **Terrain Height** | `400` | Tinggi maksimum. **Minimal 300!** |
+| **Heightmap Res** | `129` | Detail per chunk. 129 = ringan, 257 = detail |
+
+### Langkah 5: Generate!
+- Klik **🎲 Generate New Random World** di Inspector
+- Atau tekan **Play** — chunk akan otomatis di-generate saat player bergerak
+
+### Langkah 6: Test Jalan-Jalan
+- Saat Play mode, gerakkan player ke segala arah
+- Chunk baru akan muncul di depan, chunk lama menghilang di belakang
+- **Tidak ada ujung dunia!** 🎉
+
+---
+
+## Perbandingan View Distance
+
+| View Distance | Grid | Total Chunk | Area Terlihat |
+|---------------|------|------------|---------------|
+| 2 | 5×5 | 25 | 1280×1280m |
+| 3 | 7×7 | 49 | 1792×1792m |
+| **4** | **9×9** | **81** | **2304×2304m** |
+| 6 | 13×13 | 169 | 3328×3328m |
+| 8 | 17×17 | 289 | 4352×4352m |
+
+> ⚠️ View distance tinggi = lebih banyak chunk di-generate = lebih lambat.
+> Mulai dari **4**, naikkan jika performa masih baik.
+
+---
+
+## Struktur File
+
+```
+ProceduralTerrain/
+├── Core/
+│   ├── NoiseGenerator.cs          — Generate() untuk single + GenerateRegion() untuk chunk
+│   ├── NoiseSettings.cs           — ScriptableObject preset noise
+│   ├── SplineMapper.cs            — Evaluasi kurva mapping
+│   └── HeightMapProcessor.cs      — Smoothing, falloff, clamp
+├── Layers/                        ← Dipakai bersama oleh kedua mode!
+│   ├── ContinentalnessLayer.cs
+│   ├── ErosionLayer.cs
+│   ├── PeaksValleysLayer.cs
+│   ├── RiverCarverLayer.cs
+│   ├── LakeBasinLayer.cs
+│   └── BadlandsLayer.cs
+├── TerrainPipeline.cs             ← Mode 1: single terrain
+├── InfiniteTerrainManager.cs      ← Mode 2: infinite chunks  
+└── Editor/
+    ├── TerrainPipelineEditor.cs
+    └── InfiniteTerrainManagerEditor.cs
+```
+
+---
+
+## Tips & Troubleshooting
+
+### Terrain terlalu datar?
+- Pastikan **Terrain Height ≥ 300** (di parameter, bukan TerrainData)
+- Cek Console Unity untuk log statistik heightmap
+
+### Chunk tidak muncul saat Play?
+- Pastikan **Player** sudah di-assign di Inspector
+- Player harus ada di scene (bukan null)
+
+### Performa lambat?
+- Kurangi **View Distance** (4 → 3 atau 2)
+- Kurangi **Heightmap Resolution** (257 → 129)
+- Kurangi **Smooth Passes** (5 → 2)
+
+### Ada celah/patahan antar chunk?
+- Ini seharusnya tidak terjadi — noise menggunakan koordinat absolut
+- Coba klik **🔄 Regenerate Same Seed** untuk refresh neighbors

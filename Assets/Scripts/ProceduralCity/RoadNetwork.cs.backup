@@ -1,0 +1,409 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+/// <summary>
+/// PROPER CITY ROAD NETWORK - Jalan LURUS seperti jalan raya kota!
+/// 
+/// Prinsip jalan kota:
+/// 1. Jalan LURUS (horizontal/vertical) - TIDAK meliuk-liuk
+/// 2. Tikungan 90 derajat (siku/L-shape) - bukan curved!
+/// 3. Varied spacing untuk tidak terlalu seragam
+/// 4. Seed-based untuk reproducibility
+/// 
+/// Seperti jalan kota Jakarta, New York, etc - LURUS dan siku!
+/// </summary>
+[System.Serializable]
+public class RoadNetwork : MonoBehaviour
+{
+    private CityGenerator cityGenerator;
+    private System.Random seededRandom;
+
+    public List<RoadSegment> horizontalRoads = new List<RoadSegment>();
+    public List<RoadSegment> verticalRoads = new List<RoadSegment>();
+    public List<RoadSegment> radialRoads = new List<RoadSegment>();
+    public List<RoadSegment> ringRoads = new List<RoadSegment>();
+    public List<RoadSegment> arterialRoads = new List<RoadSegment>();
+    public List<RoadSegment> gridRoads = new List<RoadSegment>();
+    
+    public List<Vector3> intersections = new List<Vector3>();
+    public List<CityBlock> blocks = new List<CityBlock>();
+
+    private GameObject roadMeshObject;
+    private List<GameObject> intersectionMarkers = new List<GameObject>();
+
+    public void Initialize(CityGenerator generator)
+    {
+        cityGenerator = generator;
+        seededRandom = new System.Random(cityGenerator.randomSeed);
+    }
+
+    public void GenerateRoads()
+    {
+        ClearRoads();
+        seededRandom = new System.Random(cityGenerator.randomSeed);
+
+        float halfSize = cityGenerator.citySize * 0.5f;
+        float roadWidth = cityGenerator.roadWidth;
+        Vector3 origin = cityGenerator.transform.position;
+        float blockSize = cityGenerator.blockSize;
+
+        // Generate STRAIGHT grid roads
+        GenerateStraightGrid(origin, halfSize, blockSize, roadWidth);
+
+        // Compute intersections
+        ComputeIntersections();
+
+        // Generate blocks
+        GenerateBlocks();
+
+        // Build mesh
+        BuildRoadMesh();
+
+        Debug.Log($"[RoadNetwork] Straight Grid: {horizontalRoads.Count}H + {verticalRoads.Count}V LURUS roads");
+    }
+
+    /// <summary>
+    /// Generate grid LURUS - jalan raya kota yang proper!
+    /// TIDAK ada meliuk-liuk, semua LURUS!
+    /// </summary>
+    private void GenerateStraightGrid(Vector3 origin, float halfSize, float blockSize, float roadWidth)
+    {
+        // Horizontal roads - LURUS dari edge ke edge
+        List<float> hPositions = GenerateVariedPositions(-halfSize, halfSize, blockSize);
+        
+        foreach (float z in hPositions)
+        {
+            Vector3 start = origin + new Vector3(-halfSize, 0, z);
+            Vector3 end = origin + new Vector3(halfSize, 0, z);
+            
+            // LURUS - no curves!
+            horizontalRoads.Add(new RoadSegment(start, end, roadWidth));
+        }
+
+        // Vertical roads - LURUS dari edge ke edge
+        List<float> vPositions = GenerateVariedPositions(-halfSize, halfSize, blockSize);
+        
+        foreach (float x in vPositions)
+        {
+            Vector3 start = origin + new Vector3(x, 0, -halfSize);
+            Vector3 end = origin + new Vector3(x, 0, halfSize);
+            
+            // LURUS - no curves!
+            verticalRoads.Add(new RoadSegment(start, end, roadWidth));
+        }
+    }
+
+    /// <summary>
+    /// Generate posisi dengan varied spacing
+    /// </summary>
+    private List<float> GenerateVariedPositions(float start, float end, float baseSpacing)
+    {
+        List<float> positions = new List<float>();
+        float current = start + baseSpacing;
+
+        while (current < end - baseSpacing * 0.5f)
+        {
+            positions.Add(current);
+            
+            // Varied spacing (±20%)
+            float spacing = baseSpacing * NextFloat(0.8f, 1.2f);
+            current += spacing;
+        }
+
+        return positions;
+    }
+
+    private float NextFloat(float min, float max)
+    {
+        return min + (float)seededRandom.NextDouble() * (max - min);
+    }
+
+    private int NextInt(int min, int max)
+    {
+        return seededRandom.Next(min, max);
+    }
+
+    private void ComputeIntersections()
+    {
+        intersections.Clear();
+        HashSet<Vector3> uniqueIntersections = new HashSet<Vector3>();
+
+        // Check H x V intersections
+        foreach (var hRoad in horizontalRoads)
+        {
+            foreach (var vRoad in verticalRoads)
+            {
+                Vector3 intersection;
+                if (LineLineIntersection2D(hRoad.start, hRoad.end,
+                                           vRoad.start, vRoad.end,
+                                           out intersection))
+                {
+                    intersection = new Vector3(
+                        Mathf.Round(intersection.x * 10f) / 10f,
+                        0,
+                        Mathf.Round(intersection.z * 10f) / 10f
+                    );
+                    
+                    uniqueIntersections.Add(intersection);
+                }
+            }
+        }
+
+        intersections.AddRange(uniqueIntersections);
+    }
+
+    private bool LineLineIntersection2D(Vector3 p1, Vector3 p2, Vector3 p3, Vector3 p4, out Vector3 intersection)
+    {
+        float x1 = p1.x, z1 = p1.z;
+        float x2 = p2.x, z2 = p2.z;
+        float x3 = p3.x, z3 = p3.z;
+        float x4 = p4.x, z4 = p4.z;
+
+        float denom = (x1 - x2) * (z3 - z4) - (z1 - z2) * (x3 - x4);
+
+        if (Mathf.Abs(denom) < 0.0001f)
+        {
+            intersection = Vector3.zero;
+            return false;
+        }
+
+        float t = ((x1 - x3) * (z3 - z4) - (z1 - z3) * (x3 - x4)) / denom;
+        float u = -((x1 - x2) * (z1 - z3) - (z1 - z2) * (x1 - x3)) / denom;
+
+        if (t >= 0 && t <= 1 && u >= 0 && u <= 1)
+        {
+            intersection = new Vector3(
+                x1 + t * (x2 - x1),
+                0,
+                z1 + t * (z2 - z1)
+            );
+            return true;
+        }
+
+        intersection = Vector3.zero;
+        return false;
+    }
+
+    private void GenerateBlocks()
+    {
+        blocks.Clear();
+
+        Vector3 origin = cityGenerator.transform.position;
+        float halfSize = cityGenerator.citySize * 0.5f;
+        float blockSize = cityGenerator.blockSize;
+
+        int samples = Mathf.CeilToInt(cityGenerator.citySize / blockSize);
+
+        for (int i = 0; i < samples; i++)
+        {
+            for (int j = 0; j < samples; j++)
+            {
+                float x = -halfSize + (i + 0.5f) * blockSize;
+                float z = -halfSize + (j + 0.5f) * blockSize;
+                Vector3 center = origin + new Vector3(x, 0, z);
+
+                int nearbyIntersections = 0;
+                foreach (var intersection in intersections)
+                {
+                    if (Vector3.Distance(center, intersection) < blockSize * 0.9f)
+                    {
+                        nearbyIntersections++;
+                    }
+                }
+
+                if (nearbyIntersections >= 2)
+                {
+                    float sizeX = blockSize * NextFloat(0.7f, 1.2f);
+                    float sizeZ = blockSize * NextFloat(0.7f, 1.2f);
+
+                    blocks.Add(new CityBlock
+                    {
+                        center = center,
+                        size = new Vector2(sizeX, sizeZ),
+                        blockType = BlockType.Residential
+                    });
+                }
+            }
+        }
+    }
+
+    private void BuildRoadMesh()
+    {
+        if (roadMeshObject != null)
+        {
+            if (Application.isPlaying) Destroy(roadMeshObject);
+            else DestroyImmediate(roadMeshObject);
+        }
+
+        roadMeshObject = new GameObject("RoadMesh");
+        roadMeshObject.transform.SetParent(cityGenerator.transform);
+        cityGenerator.RegisterSpawnedObject(roadMeshObject);
+
+        MeshFilter mf = roadMeshObject.AddComponent<MeshFilter>();
+        MeshRenderer mr = roadMeshObject.AddComponent<MeshRenderer>();
+
+        if (cityGenerator.roadMaterial != null)
+        {
+            mr.sharedMaterial = cityGenerator.roadMaterial;
+        }
+        else
+        {
+            Material defaultMat = CityGenerator.CreateMaterial("Road", new Color(0.2f, 0.2f, 0.22f));
+            mr.sharedMaterial = defaultMat;
+        }
+
+        List<Vector3> vertices = new List<Vector3>();
+        List<int> triangles = new List<int>();
+        List<Vector2> uvs = new List<Vector2>();
+        int vertexIndex = 0;
+
+        foreach (var road in horizontalRoads)
+        {
+            vertexIndex = AddRoadSegmentToMesh(road, vertices, triangles, uvs, vertexIndex);
+        }
+        
+        foreach (var road in verticalRoads)
+        {
+            vertexIndex = AddRoadSegmentToMesh(road, vertices, triangles, uvs, vertexIndex);
+        }
+
+        Mesh mesh = new Mesh();
+        mesh.name = "StraightCityGrid";
+        mesh.vertices = vertices.ToArray();
+        mesh.triangles = triangles.ToArray();
+        mesh.uv = uvs.ToArray();
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+
+        mf.mesh = mesh;
+    }
+
+    private int AddRoadSegmentToMesh(RoadSegment road, List<Vector3> vertices, List<int> triangles, List<Vector2> uvs, int startIndex)
+    {
+        Vector3 direction = (road.end - road.start).normalized;
+        Vector3 perpendicular = Vector3.Cross(direction, Vector3.up) * road.width * 0.5f;
+        float thickness = 0.2f;
+
+        Vector3 v0 = road.start - perpendicular;
+        Vector3 v1 = road.start + perpendicular;
+        Vector3 v2 = road.end + perpendicular;
+        Vector3 v3 = road.end - perpendicular;
+
+        Vector3 v4 = v0 + Vector3.down * thickness;
+        Vector3 v5 = v1 + Vector3.down * thickness;
+        Vector3 v6 = v2 + Vector3.down * thickness;
+        Vector3 v7 = v3 + Vector3.down * thickness;
+
+        vertices.Add(v0); vertices.Add(v1); vertices.Add(v2); vertices.Add(v3);
+        vertices.Add(v4); vertices.Add(v5); vertices.Add(v6); vertices.Add(v7);
+
+        float length = Vector3.Distance(road.start, road.end);
+        uvs.Add(new Vector2(0, 0));
+        uvs.Add(new Vector2(1, 0));
+        uvs.Add(new Vector2(1, length / road.width));
+        uvs.Add(new Vector2(0, length / road.width));
+        uvs.Add(new Vector2(0, 0));
+        uvs.Add(new Vector2(1, 0));
+        uvs.Add(new Vector2(1, length / road.width));
+        uvs.Add(new Vector2(0, length / road.width));
+
+        triangles.Add(startIndex + 0); triangles.Add(startIndex + 1); triangles.Add(startIndex + 2);
+        triangles.Add(startIndex + 0); triangles.Add(startIndex + 2); triangles.Add(startIndex + 3);
+        triangles.Add(startIndex + 4); triangles.Add(startIndex + 6); triangles.Add(startIndex + 5);
+        triangles.Add(startIndex + 4); triangles.Add(startIndex + 7); triangles.Add(startIndex + 6);
+        triangles.Add(startIndex + 0); triangles.Add(startIndex + 4); triangles.Add(startIndex + 5);
+        triangles.Add(startIndex + 0); triangles.Add(startIndex + 5); triangles.Add(startIndex + 1);
+        triangles.Add(startIndex + 2); triangles.Add(startIndex + 6); triangles.Add(startIndex + 7);
+        triangles.Add(startIndex + 2); triangles.Add(startIndex + 7); triangles.Add(startIndex + 3);
+        triangles.Add(startIndex + 0); triangles.Add(startIndex + 3); triangles.Add(startIndex + 7);
+        triangles.Add(startIndex + 0); triangles.Add(startIndex + 7); triangles.Add(startIndex + 4);
+        triangles.Add(startIndex + 1); triangles.Add(startIndex + 5); triangles.Add(startIndex + 6);
+        triangles.Add(startIndex + 1); triangles.Add(startIndex + 6); triangles.Add(startIndex + 2);
+
+        return startIndex + 8;
+    }
+
+    public void ClearRoads()
+    {
+        radialRoads.Clear();
+        ringRoads.Clear();
+        arterialRoads.Clear();
+        gridRoads.Clear();
+        horizontalRoads.Clear();
+        verticalRoads.Clear();
+        intersections.Clear();
+        blocks.Clear();
+
+        if (roadMeshObject != null)
+        {
+            if (Application.isPlaying) Destroy(roadMeshObject);
+            else DestroyImmediate(roadMeshObject);
+            roadMeshObject = null;
+        }
+
+        foreach (var marker in intersectionMarkers)
+        {
+            if (marker != null)
+            {
+                if (Application.isPlaying) Destroy(marker);
+                else DestroyImmediate(marker);
+            }
+        }
+        intersectionMarkers.Clear();
+    }
+
+    public void DrawGizmos()
+    {
+        if (cityGenerator == null) return;
+
+        Gizmos.color = Color.yellow;
+        float halfSize = cityGenerator.citySize * 0.5f;
+        Vector3 origin = cityGenerator.transform.position;
+        Vector3 sw = origin + new Vector3(-halfSize, 0, -halfSize);
+        Vector3 se = origin + new Vector3(halfSize, 0, -halfSize);
+        Vector3 ne = origin + new Vector3(halfSize, 0, halfSize);
+        Vector3 nw = origin + new Vector3(-halfSize, 0, halfSize);
+        Gizmos.DrawLine(sw, se);
+        Gizmos.DrawLine(se, ne);
+        Gizmos.DrawLine(ne, nw);
+        Gizmos.DrawLine(nw, sw);
+
+        // Horizontal roads
+        Gizmos.color = Color.gray;
+        foreach (var road in horizontalRoads)
+            Gizmos.DrawLine(road.start, road.end);
+
+        // Vertical roads
+        Gizmos.color = Color.blue;
+        foreach (var road in verticalRoads)
+            Gizmos.DrawLine(road.start, road.end);
+
+        // Intersections
+        Gizmos.color = Color.red;
+        foreach (var intersection in intersections)
+            Gizmos.DrawSphere(intersection, cityGenerator.roadWidth * 0.3f);
+
+        // Blocks
+        Gizmos.color = Color.cyan;
+        foreach (var block in blocks)
+        {
+            Vector3 size = new Vector3(block.size.x, 0.1f, block.size.y);
+            Gizmos.DrawWireCube(block.center, size);
+        }
+    }
+}
+
+[System.Serializable]
+public struct RoadSegment
+{
+    public Vector3 start;
+    public Vector3 end;
+    public float width;
+
+    public RoadSegment(Vector3 start, Vector3 end, float width)
+    {
+        this.start = start;
+        this.end = end;
+        this.width = width;
+    }
+}
