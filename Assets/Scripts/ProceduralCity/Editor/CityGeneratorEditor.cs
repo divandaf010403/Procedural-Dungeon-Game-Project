@@ -1,183 +1,151 @@
-using UnityEngine;
 using UnityEditor;
+using UnityEngine;
 
-/// <summary>
-/// Custom Inspector untuk CityGenerator.
-/// Menambahkan tombol besar yang mudah diakses di Inspector.
-/// File HARUS ada di folder bernama "Editor" agar Unity compile sebagai Editor script.
-/// </summary>
 [CustomEditor(typeof(CityGenerator))]
 public class CityGeneratorEditor : Editor
 {
-    private GUIStyle bigButton;
-    private GUIStyle sectionTitle;
-    private GUIStyle smallButton;
-    private bool inited = false;
-
-    private void InitStyles()
-    {
-        if (inited) return;
-
-        bigButton = new GUIStyle(GUI.skin.button)
-        {
-            fontSize = 14,
-            fontStyle = FontStyle.Bold,
-            padding = new RectOffset(10, 10, 15, 15),
-            margin = new RectOffset(5, 5, 8, 8)
-        };
-
-        smallButton = new GUIStyle(GUI.skin.button)
-        {
-            fontSize = 11,
-            padding = new RectOffset(8, 8, 8, 8),
-            margin = new RectOffset(3, 3, 3, 3)
-        };
-
-        sectionTitle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = 15,
-            fontStyle = FontStyle.Bold,
-            margin = new RectOffset(5, 5, 10, 5)
-        };
-
-        inited = true;
-    }
-
-    /// <summary>
-    /// Safe generate: clear dulu, lalu generate. Mencegah duplikat object.
-    /// </summary>
-    private void SafeGenerate(CityGenerator cityGen)
-    {
-        cityGen.ClearCity();
-        cityGen.GenerateCity();
-        EditorUtility.SetDirty(cityGen);
-        SceneView.RepaintAll();
-    }
+    private bool showLSystemHelp = false;
 
     public override void OnInspectorGUI()
     {
-        InitStyles();
-
-        // Tampilkan semua field default (citySize, blockSize, dll)
         DrawDefaultInspector();
 
-        CityGenerator cityGen = (CityGenerator)target;
+        CityGenerator gen = (CityGenerator)target;
+        RoadNetwork   rn  = gen.GetComponent<RoadNetwork>();
 
-        EditorGUILayout.Space(15);
-
-        // Section: Actions
-        EditorGUILayout.LabelField("═══ TOMBOL AKSI ═══", sectionTitle);
-        EditorGUILayout.Space(5);
-
-        // Tombol GENERATE (HIJAU)
-        GUI.backgroundColor = new Color(0.4f, 0.85f, 0.4f);
-        if (GUILayout.Button("▶  GENERATE CITY (Buat Kota)", bigButton, GUILayout.Height(50)))
+        // ---------------------------------------------------------------
+        // L-System Quick Presets
+        // Hanya tampil jika mode menggunakan L-System
+        // ---------------------------------------------------------------
+        if (rn != null && rn.generationMode != RoadNetwork.RoadGenerationMode.OrthogonalGrid)
         {
-            Undo.RecordObject(cityGen, "Generate City");
+            EditorGUILayout.Space(8);
+            EditorGUILayout.LabelField("L-System Presets", EditorStyles.boldLabel);
 
-            // FIX: Kalau autoRandomSeed true, randomize seed SEBELUM generate
-            // Supaya setiap klik = kota BERBEDA
-            if (cityGen.autoRandomSeed)
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Organic\nCity"))
             {
-                cityGen.randomSeed = Random.Range(int.MinValue, int.MaxValue);
-                Debug.Log($"[CityGenerator] 🎲 Auto-randomized seed: {cityGen.randomSeed}");
+                rn.lSystemPreset         = LSystemPreset.OrganicCity;
+                rn.lSystemIterations     = 4;
+                rn.lSystemChanceToIgnore = 0.3f;
+                rn.lSystemStepSize       = 0f; // auto dari blockSpacing
+                rn.lSystemOriginCount    = 4;
+                EditorUtility.SetDirty(rn);
+            }
+            if (GUILayout.Button("Manhattan\nGrid"))
+            {
+                rn.lSystemPreset         = LSystemPreset.ManhattanGrid;
+                rn.lSystemIterations     = 3;
+                rn.lSystemChanceToIgnore = 0.1f;
+                rn.lSystemStepSize       = 0f;
+                rn.lSystemOriginCount    = 6;
+                EditorUtility.SetDirty(rn);
+            }
+            if (GUILayout.Button("Highway\n+Alley"))
+            {
+                rn.lSystemPreset         = LSystemPreset.HighwayAndAlley;
+                rn.lSystemIterations     = 4;
+                rn.lSystemChanceToIgnore = 0.2f;
+                rn.lSystemStepSize       = 0f;
+                rn.lSystemOriginCount    = 3;
+                EditorUtility.SetDirty(rn);
+            }
+            if (GUILayout.Button("Radial\nSprawl"))
+            {
+                rn.lSystemPreset         = LSystemPreset.RadialSprawl;
+                rn.lSystemIterations     = 3;
+                rn.lSystemChanceToIgnore = 0.25f;
+                rn.lSystemStepSize       = 0f;
+                rn.lSystemOriginCount    = 1; // dari pusat saja
+                EditorUtility.SetDirty(rn);
+            }
+            EditorGUILayout.EndHorizontal();
+
+            // Mode-specific info box
+            if (rn.generationMode == RoadNetwork.RoadGenerationMode.RingAndLSystem)
+            {
+                EditorGUILayout.HelpBox(
+                    "RingAndLSystem: Jalan kotak mengelilingi kota sebagai batas luar.\n" +
+                    "L-System tumbuh di interior — organik, tidak ada grid di dalam.\n" +
+                    "FixRoad() sekali di akhir → junction ring dan L-System menyatu.",
+                    MessageType.Info);
             }
 
-            // Safe generate: clear dulu, lalu generate (cegah duplikat kalau di-spam)
-            cityGen.ClearCity();
-            cityGen.GenerateCity();
-            EditorUtility.SetDirty(cityGen);
-            SceneView.RepaintAll();
-            Debug.Log($"[CityGenerator] Kota berhasil di-generate dengan seed {cityGen.randomSeed}!");
-        }
-
-        EditorGUILayout.Space(3);
-
-        // Tombol RANDOMIZE SEED (KECIL)
-        GUI.backgroundColor = new Color(0.85f, 0.75f, 1f);
-        if (GUILayout.Button("🎲  RANDOMIZE SEED SAJA (Tanpa Generate)", smallButton, GUILayout.Height(28)))
-        {
-            Undo.RecordObject(cityGen, "Randomize Seed");
-            cityGen.randomSeed = Random.Range(int.MinValue, int.MaxValue);
-            EditorUtility.SetDirty(cityGen);
-            Debug.Log($"[CityGenerator] 🎲 Seed di-randomize: {cityGen.randomSeed}");
-        }
-
-        EditorGUILayout.Space(3);
-
-        // Tombol CLEAR (MERAH)
-        GUI.backgroundColor = new Color(0.95f, 0.5f, 0.5f);
-        if (GUILayout.Button("🗑  CLEAR CITY (Hapus Semua)", bigButton, GUILayout.Height(45)))
-        {
-            if (EditorUtility.DisplayDialog("Hapus Kota?",
-                "Yakin ingin menghapus semua objek kota?",
-                "Ya, Hapus", "Batal"))
+            // Symbol reference foldout
+            showLSystemHelp = EditorGUILayout.Foldout(showLSystemHelp, "L-System Symbol Reference");
+            if (showLSystemHelp)
             {
-                Undo.RecordObject(cityGen, "Clear City");
-                cityGen.ClearCity();
-                EditorUtility.SetDirty(cityGen);
-                SceneView.RepaintAll();
-                Debug.Log("[CityGenerator] Kota berhasil dihapus!");
+                EditorGUILayout.LabelField(
+                    "F = maju + place road\n" +
+                    "f = maju tanpa road\n" +
+                    "+ = belok kanan 90°\n" +
+                    "- = belok kiri 90°\n" +
+                    "| = balik 180°\n" +
+                    "[ = push state (cabang)\n" +
+                    "] = pop state\n" +
+                    "X = growth marker (expansion only)",
+                    EditorStyles.helpBox);
             }
         }
 
-        EditorGUILayout.Space(3);
-
-        // Tombol FRAME CAMERA (BIRU)
-        GUI.backgroundColor = new Color(0.5f, 0.7f, 1f);
-        if (GUILayout.Button("📷  FRAME CAMERA (Lihat Kota)", bigButton, GUILayout.Height(45)))
-        {
-            cityGen.FrameCamera();
-            SceneView.RepaintAll();
-            Debug.Log("[CityGenerator] Camera di-frame untuk lihat kota!");
-        }
-
-        GUI.backgroundColor = Color.white;
-
-        EditorGUILayout.Space(15);
-
-        // Section: Info
-        EditorGUILayout.LabelField("═══ INFO ═══", sectionTitle);
-        EditorGUILayout.Space(5);
-
-        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-        EditorGUILayout.LabelField($"Seed: {cityGen.randomSeed}");
-        EditorGUILayout.LabelField($"City Size: {cityGen.citySize:F0}");
-        EditorGUILayout.LabelField($"Block Size: {cityGen.blockSize:F0}");
-        EditorGUILayout.LabelField($"Object Count: {cityGen.GetObjectCount()}");
-        EditorGUILayout.EndVertical();
-
-        EditorGUILayout.Space(15);
-
-        // Section: Quick Presets
-        EditorGUILayout.LabelField("═══ PRESET UKURAN ═══", sectionTitle);
-        EditorGUILayout.Space(5);
-
+        // ---------------------------------------------------------------
+        // Seed controls
+        // ---------------------------------------------------------------
+        EditorGUILayout.Space(8);
+        EditorGUILayout.LabelField("Seed", EditorStyles.boldLabel);
         EditorGUILayout.BeginHorizontal();
-        if (GUILayout.Button("Kecil\n50", GUILayout.Height(40)))
+        if (GUILayout.Button("Random Seed"))
         {
-            cityGen.citySize = 50f;
-            cityGen.blockSize = 15f;
-            cityGen.GenerateCity();
-            EditorUtility.SetDirty(cityGen);
-            SceneView.RepaintAll();
+            gen.randomSeed = Random.Range(0, int.MaxValue);
+            EditorUtility.SetDirty(gen);
         }
-        if (GUILayout.Button("Sedang\n150", GUILayout.Height(40)))
-        {
-            cityGen.citySize = 150f;
-            cityGen.blockSize = 25f;
-            cityGen.GenerateCity();
-            EditorUtility.SetDirty(cityGen);
-            SceneView.RepaintAll();
-        }
-        if (GUILayout.Button("Besar\n300", GUILayout.Height(40)))
-        {
-            cityGen.citySize = 300f;
-            cityGen.blockSize = 40f;
-            cityGen.GenerateCity();
-            EditorUtility.SetDirty(cityGen);
-            SceneView.RepaintAll();
-        }
+        EditorGUILayout.LabelField($"Current: {gen.randomSeed}", GUILayout.Width(160));
         EditorGUILayout.EndHorizontal();
+
+        // ---------------------------------------------------------------
+        // City size presets
+        // ---------------------------------------------------------------
+        EditorGUILayout.Space(8);
+        EditorGUILayout.LabelField("City Size Presets", EditorStyles.boldLabel);
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Button("Small\n1000"))  { gen.citySize = 1000f; gen.blockSize = 35f; EditorUtility.SetDirty(gen); }
+        if (GUILayout.Button("Medium\n1500")) { gen.citySize = 1500f; gen.blockSize = 40f; EditorUtility.SetDirty(gen); }
+        if (GUILayout.Button("Large\n2000"))  { gen.citySize = 2000f; gen.blockSize = 45f; EditorUtility.SetDirty(gen); }
+        if (GUILayout.Button("Huge\n3000"))   { gen.citySize = 3000f; gen.blockSize = 50f; EditorUtility.SetDirty(gen); }
+        EditorGUILayout.EndHorizontal();
+
+        // ---------------------------------------------------------------
+        // Mode description
+        // ---------------------------------------------------------------
+        if (rn != null)
+        {
+            EditorGUILayout.Space(4);
+            string modeDesc = rn.generationMode switch
+            {
+                RoadNetwork.RoadGenerationMode.OrthogonalGrid =>
+                    "OrthogonalGrid: Grid H×V klasik. Cepat, rapi, cocok untuk kota modern.",
+                RoadNetwork.RoadGenerationMode.LSystem =>
+                    "LSystem: Jalan organik dari L-System turtle. Cocok untuk kota medieval/suburban.",
+                RoadNetwork.RoadGenerationMode.RingAndLSystem =>
+                    "RingAndLSystem: Ring road mengelilingi kota + L-System organik di interior.",
+                _ => ""
+            };
+            if (!string.IsNullOrEmpty(modeDesc))
+                EditorGUILayout.HelpBox(modeDesc, MessageType.None);
+        }
+
+        // ---------------------------------------------------------------
+        // Actions
+        // ---------------------------------------------------------------
+        EditorGUILayout.Space(8);
+        EditorGUILayout.LabelField("Actions", EditorStyles.boldLabel);
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Button("Generate City", GUILayout.Height(32)))
+            gen.GenerateCity();
+        if (GUILayout.Button("Clear City", GUILayout.Height(32)))
+            gen.ClearCity();
+        EditorGUILayout.EndHorizontal();
+        if (GUILayout.Button("Frame Camera", GUILayout.Height(24)))
+            gen.FrameCamera();
     }
 }

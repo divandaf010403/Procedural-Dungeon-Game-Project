@@ -1,71 +1,128 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// PROCEDURAL ORTHOGONAL CITY ROAD NETWORK
+/// RoadNetwork — dual-mode road generation.
 ///
-/// Generation order (strictly enforced):
-///   Step 1 - Outer ring road   : Perfect closed-loop rectangle. Seed has zero effect.
-///   Step 2 - Major roads       : Full-span axis-aligned arteries inside the ring.
-///   Step 3 - Block detection   : Rectangular cells formed by current H/V lines.
-///   Step 4a - Secondary roads  : Subdivides large blocks; validated before placing.
-///   Step 4b - Local roads      : Sparse branches in still-large blocks (~40% skip).
-///   Step 5  - Cleanup          : Removes overlaps, out-of-bounds, tiny segments.
+/// MODE: OrthogonalGrid (default)
+///   Pipeline klasik: H-lines × V-lines → mesh terpadu.
 ///
-/// Hard rules (enforced unconditionally):
-///   - Every segment is PURELY horizontal (Z=const) or PURELY vertical (X=const).
-///   - No diagonals, curves, or angled segments under ANY condition.
-///   - Seed affects only spacing/jitter amounts, never road direction.
-///   - Every segment is validated before commit (boundary, min-length, near-duplicate).
-///   - Intersections are only: straight, 90-degree corner, T-junction, 4-way crossroad.
+/// MODE: LSystem
+///   L-System turtle graphics menghasilkan segmen jalan organik.
+///   Setiap segmen di-snap ke grid cell → FixRoad() bangun mesh.
+///   Bisa di-overlay dengan grid dasar (useLSystemOverGrid = true).
+///
+/// MODE: Hybrid
+///   Grid dasar + L-System overlay untuk jalan sekunder/gang.
+///
+/// L-System symbols (dari SVS RoadHelper + SimpleVisualizer):
+///   F  = maju 1 step, place road
+///   f  = maju 1 step, no road
+///   +  = belok kanan 90°
+///   -  = belok kiri 90°
+///   |  = balik 180°
+///   [  = push state (cabang)
+///   ]  = pop state (kembali ke parent)
+///   X  = growth marker (untuk expansion, tidak di-draw)
 /// </summary>
 [System.Serializable]
 public class RoadNetwork : MonoBehaviour
 {
     // -----------------------------------------------------------------------
-    // Public road lists (consumed by the rest of the city pipeline)
+    // Road generation mode
     // -----------------------------------------------------------------------
+    public enum RoadGenerationMode
+    {
+        OrthogonalGrid, // Grid H×V klasik (default)
+        LSystem,        // L-System turtle saja
+        RingAndLSystem  // Ring road mengelilingi kota + L-System isi interior
+    }
+
+    // -----------------------------------------------------------------------
+    // Public lists (consumed by pipeline)
+    // -----------------------------------------------------------------------
+    public List<RoadSegment> roads           = new List<RoadSegment>();
     public List<RoadSegment> horizontalRoads = new List<RoadSegment>();
     public List<RoadSegment> verticalRoads   = new List<RoadSegment>();
+    public List<RoadSegment> radialRoads     = new List<RoadSegment>(); // unused
+    public List<RoadSegment> ringRoads       = new List<RoadSegment>(); // unused
+    public List<RoadSegment> arterialRoads   = new List<RoadSegment>(); // unused
+    public List<RoadSegment> gridRoads       = new List<RoadSegment>(); // unused
 
-    // Legacy lists kept so other scripts that reference them still compile
-    public List<RoadSegment> radialRoads   = new List<RoadSegment>();
-    public List<RoadSegment> ringRoads     = new List<RoadSegment>();
-    public List<RoadSegment> arterialRoads = new List<RoadSegment>();
-    public List<RoadSegment> gridRoads     = new List<RoadSegment>();
+    public List<Vector3>     intersections = new List<Vector3>();
+    public List<CityBlock>   blocks        = new List<CityBlock>();
+    public List<JunctionInfo> junctions    = new List<JunctionInfo>();
 
-    public List<Vector3>   intersections = new List<Vector3>();
-    public List<CityBlock> blocks        = new List<CityBlock>();
+    // -----------------------------------------------------------------------
+    // Mode selector
+    // -----------------------------------------------------------------------
+    [Header("Road Generation Mode")]
+    [Tooltip("OrthogonalGrid = grid klasik H×V.\nLSystem = jalan organik dari L-System saja.\nRingAndLSystem = ring road mengelilingi kota + L-System isi interior.")]
+    public RoadGenerationMode generationMode = RoadGenerationMode.OrthogonalGrid;
+
+    // -----------------------------------------------------------------------
+    // Grid settings (exposed so Inspector bisa tweak)
+    // -----------------------------------------------------------------------
+    [Header("Grid Road Settings")]
+    [Tooltip("Spacing antar jalan dalam world units. Biasanya = blockSize dari CityGenerator.")]
+    public float blockSpacing = 80f;
+
+    [Range(0f, 0.4f)]
+    [Tooltip("Jitter maksimal per-garis (fraksi dari blockSpacing). 0 = grid sempurna.")]
+    public float jitterFraction = 0.15f;
+
+    [Tooltip("Tambah extra jalan di tengah tiap blok (membagi blok jadi 2). Menambah kepadatan.")]
+    public bool addMidStreets = false;
+
+    // -----------------------------------------------------------------------
+    // L-System settings
+    // -----------------------------------------------------------------------
+    [Header("L-System Road Settings")]
+
+    [Tooltip("Preset L-System yang dipakai.\nCustom = gunakan axiom/rules custom di bawah.")]
+    public LSystemPreset lSystemPreset = LSystemPreset.OrganicCity;
+
+    [Tooltip("Panjang 1 step turtle dalam world units. Biasanya = blockSpacing.")]
+    public float lSystemStepSize = 80f;
+
+    [Range(1, 8)]
+    [Tooltip("Iterasi ekspansi L-System. Lebih tinggi = lebih banyak jalan, lebih lambat.")]
+    public int lSystemIterations = 4;
+
+    [Range(0f, 1f)]
+    [Tooltip("Probabilitas skip rule per-karakter (variasi organik). Dari SVS RoadHelper pattern.")]
+    public float lSystemChanceToIgnore = 0.3f;
+
+    [Tooltip("Custom axiom — hanya dipakai jika preset = Custom.")]
+    public string lSystemCustomAxiom = "X";
+
+    [Tooltip("Custom rules — hanya dipakai jika preset = Custom. Format: 'X=F[-FX]+FX'")]
+    public string[] lSystemCustomRules = new string[] { "X=F[-FX]+FX" };
 
     // -----------------------------------------------------------------------
     // Private state
     // -----------------------------------------------------------------------
-    private CityGenerator cityGenerator;
-    private System.Random rng;
+    private CityGenerator   cityGenerator;
+    private System.Random   rng;
 
     private float   halfSize;
-    private Vector3 origin;
     private float   roadWidth;
+    private float   cellSize;
 
-    // Centre-line axis positions of every committed road
-    private List<float> hLines = new List<float>(); // Z of each horizontal road
-    private List<float> vLines = new List<float>(); // X of each vertical road
+    private GameObject    roadMeshObject;
+    private RoadGridHelper gridHelper;
 
-    private GameObject       roadMeshObject;
-    private List<GameObject> intersectionMarkers = new List<GameObject>();
+    private List<Vector3Int> gridPositions = new List<Vector3Int>();
+    private List<float>      hLines        = new List<float>();   // Z world coords
+    private List<float>      vLines        = new List<float>();   // X world coords
 
     // -----------------------------------------------------------------------
     // Constants
     // -----------------------------------------------------------------------
-    private const float MIN_SEG_LEN   = 8f;    // Reject segments shorter than this
-    private const float MIN_BLOCK_DIM = 18f;   // Blocks thinner than this are skipped
-    private const float EPS           = 0.05f; // Float equality epsilon
+    private const float EPS           = 0.05f;
+    private const float MIN_BLOCK_DIM = 20f;
 
-    // Width multipliers per hierarchy level
-    private const float RING_W  = 1.6f;
-    private const float MAJOR_W = 1.3f;
-    private const float SEC_W   = 1.0f;
-    private const float LOC_W   = 0.75f;
+    private const float SEC_W  = 1.0f;
 
     // =======================================================================
     // PUBLIC API
@@ -81,344 +138,592 @@ public class RoadNetwork : MonoBehaviour
         ClearRoads();
         rng       = new System.Random(cityGenerator.randomSeed);
         halfSize  = cityGenerator.citySize * 0.5f;
-        origin    = cityGenerator.transform.position;
         roadWidth = cityGenerator.roadWidth;
+        // cellSize = 1 unit di grid = 1 tile road (lebar 1 jalan)
+        cellSize  = roadWidth;
 
-        // Step 1 - Outer ring road (deterministic, seed-independent)
-        StepOuterRingRoad();
+        roadMeshObject = new GameObject("RoadMesh");
+        roadMeshObject.transform.SetParent(cityGenerator.transform);
+        cityGenerator.RegisterSpawnedObject(roadMeshObject);
 
-        // Step 2 - Major internal arteries
-        StepMajorRoads();
+        Material roadMat = cityGenerator.roadMaterial != null
+            ? cityGenerator.roadMaterial
+            : CityGenerator.CreateMaterial("Road", new Color(0.18f, 0.18f, 0.20f));
 
-        // Step 3 - Detect cells from current grid
-        RebuildBlocks();
+        gridHelper = new RoadGridHelper(roadMeshObject, roadMat, cellSize);
 
-        // Step 4a - Secondary roads
-        StepSecondaryRoads();
-        RebuildBlocks();
+        // Hitung effective spacing — dipakai oleh grid DAN L-System
+        // supaya keduanya proporsional terhadap citySize berapapun
+        float effectiveSpacing = blockSpacing > 0f ? blockSpacing : cityGenerator.blockSize;
 
-        // Step 4b - Local roads
-        StepLocalRoads();
-        RebuildBlocks();
+        // Hitung L-System step size proporsional terhadap citySize.
+        // Kalau user set lSystemStepSize > 0, pakai itu.
+        // Kalau 0 (auto), derive dari spacing supaya konsisten di semua ukuran:
+        //   stepSize = spacing → 1 step turtle = 1 blok
+        float effectiveLsStep = lSystemStepSize > 0f
+            ? lSystemStepSize
+            : effectiveSpacing;
 
-        // Step 5 - Cleanup
-        StepCleanup();
-        RebuildBlocks();
+        // Dispatch ke mode yang dipilih.
+        // PENTING: semua mode hanya PLACE tile ke gridHelper.
+        // FixRoad() + RebuildBlocks() + ComputeIntersections() dipanggil
+        // SEKALI di FinalizeRoads() setelah semua place selesai.
+        // Dengan cara ini junction antara grid road dan L-System road
+        // otomatis ter-detect dan mesh menyatu.
+        var hWorldZ = new List<float>();
+        var vWorldX = new List<float>();
 
-        // Build intersection list and render mesh
-        ComputeIntersections();
-        BuildRoadMesh();
+        switch (generationMode)
+        {
+            case RoadGenerationMode.LSystem:
+                PlaceLSystemTiles(effectiveLsStep);
+                break;
 
-        Debug.Log($"[RoadNetwork] Done: {horizontalRoads.Count}H + {verticalRoads.Count}V roads, "
-                + $"{intersections.Count} intersections, {blocks.Count} blocks.");
+            case RoadGenerationMode.RingAndLSystem:
+                // Pass 1: ring road mengelilingi kota (boundary)
+                PlaceRingRoad();
+                // Pass 2: L-System isi interior — turtle mulai dari dalam ring
+                PlaceLSystemTiles(effectiveLsStep);
+                break;
+
+            default: // OrthogonalGrid
+                PlaceGridTiles(effectiveSpacing, hWorldZ, vWorldX);
+                break;
+        }
+
+        // ---- Finalize: FixRoad + Blocks + Junctions — satu kali untuk semua mode ----
+        FinalizeRoads(hWorldZ, vWorldX);
     }
 
     // =======================================================================
-    // STEP 1 - OUTER RING ROAD
-    // Four axis-aligned segments forming a closed loop rectangle.
-    // Position derived from citySize only; randomness has ZERO influence.
+    // PLACE: GRID TILES
+    // Hanya place tile ke gridHelper — tidak ada FixRoad/Blocks/Junctions.
+    // Mengisi hWorldZ dan vWorldX yang dibutuhkan FinalizeRoads().
     // =======================================================================
-    private void StepOuterRingRoad()
+    private void PlaceGridTiles(float spacing, List<float> hWorldZ, List<float> vWorldX)
     {
-        float rw   = roadWidth * RING_W;
-        float half = rw * 0.5f;
+        float maxJitter = spacing * jitterFraction;
 
-        float zS = origin.z - halfSize + half; // South
-        float zN = origin.z + halfSize - half; // North
-        float xW = origin.x - halfSize + half; // West
-        float xE = origin.x + halfSize - half; // East
+        hWorldZ.Add(-halfSize);
+        hWorldZ.Add( halfSize);
+        vWorldX.Add(-halfSize);
+        vWorldX.Add( halfSize);
 
-        ForceH(zS, xW, xE, rw); // South edge
-        ForceH(zN, xW, xE, rw); // North edge
-        ForceV(xW, zS, zN, rw); // West edge
-        ForceV(xE, zS, zN, rw); // East edge
+        for (float z = -halfSize + spacing; z < halfSize - spacing * 0.5f; z += spacing)
+        {
+            float jitter = (float)(rng.NextDouble() * 2.0 - 1.0) * maxJitter;
+            hWorldZ.Add(Mathf.Clamp(z + jitter, -halfSize + roadWidth, halfSize - roadWidth));
+        }
+        for (float x = -halfSize + spacing; x < halfSize - spacing * 0.5f; x += spacing)
+        {
+            float jitter = (float)(rng.NextDouble() * 2.0 - 1.0) * maxJitter;
+            vWorldX.Add(Mathf.Clamp(x + jitter, -halfSize + roadWidth, halfSize - roadWidth));
+        }
 
-        Debug.Log("[RoadNetwork] Step 1 - Ring road placed.");
+        if (addMidStreets)
+        {
+            var midH = new List<float>();
+            hWorldZ.Sort();
+            for (int i = 0; i < hWorldZ.Count - 1; i++)
+                midH.Add((hWorldZ[i] + hWorldZ[i + 1]) * 0.5f);
+            hWorldZ.AddRange(midH);
+
+            var midV = new List<float>();
+            vWorldX.Sort();
+            for (int i = 0; i < vWorldX.Count - 1; i++)
+                midV.Add((vWorldX[i] + vWorldX[i + 1]) * 0.5f);
+            vWorldX.AddRange(midV);
+        }
+
+        hWorldZ.Sort();
+        vWorldX.Sort();
+
+        int xMinCell = WorldToCell(-halfSize);
+        int xMaxCell = WorldToCell( halfSize);
+        int roadLenH = xMaxCell - xMinCell;
+
+        foreach (float wz in hWorldZ)
+        {
+            int zCell = WorldToCell(wz);
+            gridHelper.PlaceStreetPositions(new Vector3Int(xMinCell, 0, zCell),
+                                            new Vector3Int(1, 0, 0), roadLenH);
+        }
+
+        int zMinCell = WorldToCell(-halfSize);
+        int zMaxCell = WorldToCell( halfSize);
+        int roadLenV = zMaxCell - zMinCell;
+
+        foreach (float wx in vWorldX)
+        {
+            int xCell = WorldToCell(wx);
+            gridHelper.PlaceStreetPositions(new Vector3Int(xCell, 0, zMinCell),
+                                            new Vector3Int(0, 0, 1), roadLenV);
+        }
     }
 
     // =======================================================================
-    // STEP 2 - MAJOR ROADS
-    // Full-span straight roads that cross the full interior.
-    // Count and spacing are seeded; direction is always strictly H or V.
+    // PLACE: RING ROAD
+    // 4 sisi boundary mengelilingi kota — jalan luar yang membingkai L-System.
+    // Turtle L-System mulai dari dalam ring, FixRoad() menyatukan junction.
     // =======================================================================
-    private void StepMajorRoads()
+    private void PlaceRingRoad()
     {
-        float rw = roadWidth * MAJOR_W;
+        // Inset sedikit dari boundary supaya ring road ada di dalam kota,
+        // bukan tepat di tepi. Pakai roadWidth sebagai margin.
+        float inset    = roadWidth * 0.5f;
+        float minCoord = -halfSize + inset;
+        float maxCoord =  halfSize - inset;
 
-        float innerZmin = origin.z - halfSize + roadWidth * RING_W;
-        float innerZmax = origin.z + halfSize - roadWidth * RING_W;
-        float innerXmin = origin.x - halfSize + roadWidth * RING_W;
-        float innerXmax = origin.x + halfSize - roadWidth * RING_W;
+        int minCell = WorldToCell(minCoord);
+        int maxCell = WorldToCell(maxCoord);
+        int len     = maxCell - minCell;
 
-        float span  = innerZmax - innerZmin;
-        float step  = cityGenerator.blockSize * RandF(2.2f, 3.2f);
-        int   count = Mathf.Clamp(Mathf.RoundToInt(span / step), 2, 7);
+        // Sisi Selatan  (Z = min, arah X+)
+        gridHelper.PlaceStreetPositions(
+            new Vector3Int(minCell, 0, minCell), new Vector3Int(1, 0, 0), len + 1);
 
-        EvenRoads(true,  count, innerZmin, innerZmax, innerXmin, innerXmax, rw);
-        EvenRoads(false, count, innerXmin, innerXmax, innerZmin, innerZmax, rw);
+        // Sisi Utara    (Z = max, arah X+)
+        gridHelper.PlaceStreetPositions(
+            new Vector3Int(minCell, 0, maxCell), new Vector3Int(1, 0, 0), len + 1);
 
-        Debug.Log("[RoadNetwork] Step 2 - Major roads placed.");
+        // Sisi Barat    (X = min, arah Z+)
+        gridHelper.PlaceStreetPositions(
+            new Vector3Int(minCell, 0, minCell), new Vector3Int(0, 0, 1), len + 1);
+
+        // Sisi Timur    (X = max, arah Z+)
+        gridHelper.PlaceStreetPositions(
+            new Vector3Int(maxCell, 0, minCell), new Vector3Int(0, 0, 1), len + 1);
+
+        // Daftarkan 4 segmen ke roads list supaya district/buildings aware
+        float wMin = CellToWorld(minCell);
+        float wMax = CellToWorld(maxCell);
+        roads.Add(new RoadSegment(new Vector3(wMin, 0, wMin), new Vector3(wMax, 0, wMin), roadWidth)); // S
+        roads.Add(new RoadSegment(new Vector3(wMin, 0, wMax), new Vector3(wMax, 0, wMax), roadWidth)); // N
+        roads.Add(new RoadSegment(new Vector3(wMin, 0, wMin), new Vector3(wMin, 0, wMax), roadWidth)); // W
+        roads.Add(new RoadSegment(new Vector3(wMax, 0, wMin), new Vector3(wMax, 0, wMax), roadWidth)); // E
+
+        Debug.Log($"[RoadNetwork] Ring road placed: {wMin:F0} → {wMax:F0} ({len} cells/side)");
+    }
+
+    // =======================================================================
+    // PLACE: L-SYSTEM TILES
+    // Pendekatan SVS Visualizer.cs:
+    //   - SINGLE origin dari pusat kota → semua cabang tumbuh dari 1 akar
+    //     → connected by design, tidak perlu connectivity repair
+    //   - Length decay per depth → semakin dalam cabang, semakin pendek step
+    //     → seperti SVS "Length -= 2" tapi proporsional terhadap citySize
+    //   - Hasilnya: satu pohon jalan yang terhubung sempurna
+    // =======================================================================
+    private void PlaceLSystemTiles(float stepSize)
+    {
+        var lsys = BuildLSystemFromPreset();
+        lsys.Init(cityGenerator.randomSeed);
+
+        // Iterasi proporsional terhadap citySize
+        // citySize 1000 → max 4, 2000 → max 5, 3000 → max 6
+        int safeMaxIter = 3 + Mathf.FloorToInt(cityGenerator.citySize / 1000f);
+        lsys.iterations = Mathf.Min(lsys.iterations, safeMaxIter);
+
+        string sentence = lsys.Generate();
+        Debug.Log($"[RoadNetwork] L-System sentence: {sentence.Length} chars "
+                + $"(preset={lSystemPreset}, iter={lsys.iterations}, step={stepSize:F1})");
+
+        Vector3 origin = cityGenerator.transform.position;
+
+        // SINGLE origin dari pusat kota — semua cabang terhubung ke satu pohon
+        // Decay factor: setiap level stack mengurangi step size
+        // Mirip SVS "Length -= 2" tapi proporsional (tidak hardcoded)
+        // decayFactor 0.7 → depth 0=100%, 1=70%, 2=49%, 3=34%
+        float decayFactor = 0.7f;
+
+        PlaceSegmentsWithDecay(sentence, origin.x, origin.z, 0, stepSize, decayFactor, origin);
+
+        // Untuk RingAndLSystem: tambah 4 spoke dari pusat ke ring road
+        // supaya interior terhubung ke ring
+        if (generationMode == RoadGenerationMode.RingAndLSystem)
+            PlaceSpokesToRing(origin);
     }
 
     /// <summary>
-    /// Places count roads evenly in [posMin, posMax] with up to 15% seeded jitter.
-    /// isHorizontal=true  -> horizontal roads (pos = Z, span = X range)
-    /// isHorizontal=false -> vertical roads   (pos = X, span = Z range)
+    /// Versi PlaceSegmentsFromTurtle dengan depth-aware step decay.
+    /// Turtle berjalan dengan step size yang berkurang per level stack depth —
+    /// persis seperti SVS Visualizer "Length -= 2" tapi proporsional.
     /// </summary>
-    private void EvenRoads(bool isHorizontal, int count,
-                           float posMin, float posMax,
-                           float spanMin, float spanMax, float width)
+    private void PlaceSegmentsWithDecay(string sentence,
+                                        float startX, float startZ, int startDir,
+                                        float baseStep, float decayFactor,
+                                        Vector3 boundsOrigin)
     {
-        if (count <= 0) return;
-        float gap    = (posMax - posMin) / (count + 1);
-        float jitter = gap * 0.15f;
+        // Jalankan turtle manual dengan decay — tidak pakai RoadVisualizer
+        // karena perlu track stack depth untuk hitung step per segment
+        var turtle   = new RoadTurtle(startX, startZ, startDir, baseStep);
+        var stack    = new Stack<(float x, float z, int dir, float step)>();
+        float curStep = baseStep;
 
-        for (int i = 1; i <= count; i++)
+        foreach (char c in sentence)
         {
-            float pos = posMin + gap * i + RandF(-jitter, jitter);
-            pos = Mathf.Clamp(pos, posMin + width, posMax - width);
+            switch (c)
+            {
+                case 'F':
+                {
+                    turtle.StepSize = curStep;
+                    var (from, to)  = turtle.MoveForward();
 
-            if (isHorizontal) TryH(pos, spanMin, spanMax, width);
-            else              TryV(pos, spanMin, spanMax, width);
+                    // Clamp ke batas kota
+                    Vector3 clampedTo = ClampToBoundsStatic(to, boundsOrigin, halfSize, curStep);
+                    if (Vector3.Distance(from, clampedTo) > curStep * 0.1f)
+                    {
+                        var fromCell = WorldToCell3(from);
+                        var toCell   = WorldToCell3(clampedTo);
+                        var delta    = toCell - fromCell;
+                        int len      = Mathf.Max(Mathf.Abs(delta.x), Mathf.Abs(delta.z));
+                        if (len > 0)
+                        {
+                            var dir = new Vector3Int(
+                                delta.x != 0 ? (int)Mathf.Sign(delta.x) : 0,
+                                0,
+                                delta.z != 0 ? (int)Mathf.Sign(delta.z) : 0);
+                            gridHelper.PlaceStreetPositions(fromCell, dir, len + 1);
+                            roads.Add(new RoadSegment(from, clampedTo, roadWidth));
+                        }
+                        // Clamp turtle position
+                        turtle.X = clampedTo.x;
+                        turtle.Z = clampedTo.z;
+                    }
+                    break;
+                }
+                case 'f':
+                    turtle.StepSize = curStep;
+                    turtle.MoveForward();
+                    break;
+                case '+': turtle.TurnRight();   break;
+                case '-': turtle.TurnLeft();    break;
+                case '|': turtle.TurnAround();  break;
+                case '[':
+                    // Push — kurangi step size per depth (SVS Length -= 2)
+                    stack.Push((turtle.X, turtle.Z, turtle.Dir, curStep));
+                    curStep = Mathf.Max(curStep * decayFactor, cellSize * 2f); // min 2 cells
+                    turtle.Push();
+                    break;
+                case ']':
+                    // Pop — kembalikan step size ke sebelumnya
+                    if (stack.Count > 0)
+                    {
+                        var (px, pz, pd, ps) = stack.Pop();
+                        turtle.X    = px;
+                        turtle.Z    = pz;
+                        turtle.Dir  = pd;
+                        curStep     = ps;
+                    }
+                    turtle.Pop();
+                    break;
+            }
         }
     }
 
-    // =======================================================================
-    // STEP 4a - SECONDARY ROADS
-    // Splits blocks wider than ~1.8x blockSize. ~25% of blocks left open.
-    // =======================================================================
-    private void StepSecondaryRoads()
+    /// <summary>
+    /// Tambah 4 spoke (jalan lurus) dari pusat kota ke ring road.
+    /// Memastikan interior L-System selalu terhubung ke ring road
+    /// di 4 arah (N, S, E, W).
+    /// </summary>
+    private void PlaceSpokesToRing(Vector3 origin)
     {
-        float rw        = roadWidth * SEC_W;
-        float threshold = cityGenerator.blockSize * 1.8f;
-        var   snap      = new List<CityBlock>(blocks);
+        float inset   = roadWidth * 0.5f;
+        float ringMin = -halfSize + inset;
+        float ringMax =  halfSize - inset;
 
-        foreach (var b in snap)
-        {
-            if (RandF(0f, 1f) < 0.25f) continue; // preserve open space
+        int cx = WorldToCell(origin.x);
+        int cz = WorldToCell(origin.z);
 
-            if (b.size.x > threshold)
-            {
-                float x = b.center.x + b.size.x * RandF(-0.15f, 0.15f);
-                TryV(x,
-                     b.center.z - b.size.y * 0.5f,
-                     b.center.z + b.size.y * 0.5f,
-                     rw);
-            }
+        int minCell = WorldToCell(ringMin);
+        int maxCell = WorldToCell(ringMax);
 
-            if (b.size.y > threshold)
-            {
-                float z = b.center.z + b.size.y * RandF(-0.15f, 0.15f);
-                TryH(z,
-                     b.center.x - b.size.x * 0.5f,
-                     b.center.x + b.size.x * 0.5f,
-                     rw);
-            }
-        }
+        // North spoke: dari center ke ring utara (Z+)
+        int lenN = maxCell - cz;
+        if (lenN > 0)
+            gridHelper.PlaceStreetPositions(new Vector3Int(cx, 0, cz), new Vector3Int(0, 0, 1), lenN + 1);
 
-        Debug.Log("[RoadNetwork] Step 4a - Secondary roads placed.");
+        // South spoke: dari center ke ring selatan (Z-)
+        int lenS = cz - minCell;
+        if (lenS > 0)
+            gridHelper.PlaceStreetPositions(new Vector3Int(cx, 0, minCell), new Vector3Int(0, 0, 1), lenS + 1);
+
+        // East spoke: dari center ke ring timur (X+)
+        int lenE = maxCell - cx;
+        if (lenE > 0)
+            gridHelper.PlaceStreetPositions(new Vector3Int(cx, 0, cz), new Vector3Int(1, 0, 0), lenE + 1);
+
+        // West spoke: dari center ke ring barat (X-)
+        int lenW = cx - minCell;
+        if (lenW > 0)
+            gridHelper.PlaceStreetPositions(new Vector3Int(minCell, 0, cz), new Vector3Int(1, 0, 0), lenW + 1);
+
+        Debug.Log($"[RoadNetwork] Spokes placed: center=({cx},{cz}), ring=[{minCell}..{maxCell}]");
+    }
+
+    /// <summary>Clamp posisi ke batas kota.</summary>
+    private static Vector3 ClampToBoundsStatic(Vector3 pos, Vector3 origin, float halfSize, float margin)
+    {
+        float m = margin * 0.5f;
+        return new Vector3(
+            Mathf.Clamp(pos.x, origin.x - halfSize + m, origin.x + halfSize - m),
+            0f,
+            Mathf.Clamp(pos.z, origin.z - halfSize + m, origin.z + halfSize - m));
     }
 
     // =======================================================================
-    // STEP 4b - LOCAL ROADS
-    // Sparse branches in blocks still larger than ~1.4x blockSize.
-    // ~40% skip rate to keep open areas.
+    // FINALIZE: FixRoad + RebuildBlocks + ComputeIntersections
+    // Dipanggil SEKALI setelah semua place selesai — berlaku untuk semua mode.
+    // Dengan satu FixRoad() di sini, junction antara grid road dan L-System road
+    // otomatis ter-detect: cell yang bersentuhan langsung di-swap ke mesh
+    // corner/T/4way yang benar.
     // =======================================================================
-    private void StepLocalRoads()
+    private void FinalizeRoads(List<float> hWorldZ, List<float> vWorldX)
     {
-        float rw        = roadWidth * LOC_W;
-        float threshold = cityGenerator.blockSize * 1.4f;
-        var   snap      = new List<CityBlock>(blocks);
+        // Snapshot semua cell
+        gridPositions.Clear();
+        foreach (var pos in gridHelper.roadDictionary.Keys)
+            gridPositions.Add(pos);
 
-        foreach (var b in snap)
+        // SATU FixRoad() untuk semua mode
+        gridHelper.FixRoad();
+
+        // Rebuild road segments dan blocks
+        if (hWorldZ.Count > 0 && vWorldX.Count > 0)
         {
-            if (b.size.x < threshold && b.size.y < threshold) continue;
-            if (RandF(0f, 1f) < 0.40f) continue; // preserve open space
-
-            if (b.size.x > threshold)
-            {
-                float x = b.center.x + b.size.x * RandF(-0.2f, 0.2f);
-                TryV(x,
-                     b.center.z - b.size.y * 0.5f,
-                     b.center.z + b.size.y * 0.5f,
-                     rw);
-            }
-
-            if (b.size.y > threshold)
-            {
-                float z = b.center.z + b.size.y * RandF(-0.2f, 0.2f);
-                TryH(z,
-                     b.center.x - b.size.x * 0.5f,
-                     b.center.x + b.size.x * 0.5f,
-                     rw);
-            }
+            // Grid mode atau Hybrid: pakai hLines/vLines untuk road segments dan blok rapi
+            RebuildRoadsFromGrid(hWorldZ, vWorldX);
+            RebuildBlocks();
+        }
+        else
+        {
+            // LSystem mode: rebuild dari grid cells langsung
+            RebuildBlocksFromCells();
         }
 
-        Debug.Log("[RoadNetwork] Step 4b - Local roads placed.");
+        ComputeIntersections();
+
+        string modeName = generationMode.ToString();
+        Debug.Log($"[RoadNetwork] {modeName}: {roads.Count} roads, "
+                + $"{junctions.Count} junctions, {blocks.Count} blocks, "
+                + $"{gridPositions.Count} cells");
     }
 
-    // =======================================================================
-    // STEP 5 - CLEANUP
-    // Removes out-of-bounds, too-short, and duplicate segments.
-    // Rebuilds hLines/vLines from surviving segments.
-    // =======================================================================
-    private void StepCleanup()
+    /// <summary>
+    /// Buat LSystemGenerator dari preset yang dipilih di Inspector.
+    /// Mengadaptasi pattern dari SVS LSystemGenerator (rootSentence + rules + iterationLimit).
+    /// </summary>
+    private LSystemGenerator BuildLSystemFromPreset()
     {
-        horizontalRoads = Cleaned(horizontalRoads);
-        verticalRoads   = Cleaned(verticalRoads);
+        var lsys = new LSystemGenerator();
+        lsys.iterations     = lSystemIterations;
+        lsys.chanceToIgnore = lSystemChanceToIgnore;
 
+        switch (lSystemPreset)
+        {
+            // -----------------------------------------------------------------
+            // OrganicCity — dari SVS SimpleVisualizer default
+            // Axiom: X → F[-FX]+FX (percabangan 45° → dikuantisasi ke 90°)
+            // Menghasilkan jalan bercabang organik dengan dead-end
+            // -----------------------------------------------------------------
+            case LSystemPreset.OrganicCity:
+                lsys.axiom = "X";
+                lsys.rules = new LSystemGenerator.Rule[]
+                {
+                    new LSystemGenerator.Rule { input = 'X', output = "F[-FX]+FX",     chance = 1.0f },
+                };
+                break;
+
+            // -----------------------------------------------------------------
+            // ManhattanGrid — grid orthogonal rapat ala NYC
+            // Axiom: FX → F[+F]F[-F]FX (bercabang kanan-kiri di tiap step)
+            // Menghasilkan grid teratur dengan variasi jitter minimal
+            // -----------------------------------------------------------------
+            case LSystemPreset.ManhattanGrid:
+                lsys.axiom = "FX";
+                lsys.chanceToIgnore = 0.1f; // sedikit ignore → grid lebih rapi
+                lsys.rules = new LSystemGenerator.Rule[]
+                {
+                    new LSystemGenerator.Rule { input = 'X', output = "[+FX][-FX]FX", chance = 1.0f },
+                    new LSystemGenerator.Rule { input = 'F', output = "FF",            chance = 0.3f },
+                };
+                break;
+
+            // -----------------------------------------------------------------
+            // HighwayAndAlley — arterial road + gang sempit
+            // Axiom: FFF[+FF]FFF[-FF]FX (jalan panjang lurus, cabang pendek di sisi)
+            // Step panjang untuk main road, cabang pendek = gang/alley
+            // -----------------------------------------------------------------
+            case LSystemPreset.HighwayAndAlley:
+                lsys.axiom = "FFFX";
+                lsys.chanceToIgnore = 0.2f;
+                lsys.rules = new LSystemGenerator.Rule[]
+                {
+                    new LSystemGenerator.Rule { input = 'X', output = "FFF[+FX][-FX]X", chance = 1.0f },
+                    new LSystemGenerator.Rule { input = 'F', output = "FF",              chance = 0.15f },
+                };
+                break;
+
+            // -----------------------------------------------------------------
+            // RadialSprawl — jalan memancar dari pusat seperti kota Eropa
+            // 4 arah utama + diagonal dikuantisasi, menghasilkan pola bintang
+            // -----------------------------------------------------------------
+            case LSystemPreset.RadialSprawl:
+                lsys.axiom = "X";
+                lsys.chanceToIgnore = 0.25f;
+                lsys.rules = new LSystemGenerator.Rule[]
+                {
+                    new LSystemGenerator.Rule { input = 'X', output = "F[+FX]F[-FX]F[+FX]X", chance = 1.0f },
+                    new LSystemGenerator.Rule { input = 'F', output = "FF",                    chance = 0.2f },
+                };
+                break;
+
+            // -----------------------------------------------------------------
+            // Custom — pakai axiom/rules dari Inspector field
+            // -----------------------------------------------------------------
+            case LSystemPreset.Custom:
+            default:
+                lsys.axiom = lSystemCustomAxiom;
+                var customRules = new List<LSystemGenerator.Rule>();
+                if (lSystemCustomRules != null)
+                {
+                    foreach (var ruleStr in lSystemCustomRules)
+                    {
+                        // Parse format "X=F[-FX]+FX"
+                        if (string.IsNullOrEmpty(ruleStr)) continue;
+                        int eqIdx = ruleStr.IndexOf('=');
+                        if (eqIdx < 1 || eqIdx >= ruleStr.Length - 1) continue;
+                        char   inp = ruleStr[0];
+                        string outp = ruleStr.Substring(eqIdx + 1);
+                        customRules.Add(new LSystemGenerator.Rule
+                            { input = inp, output = outp, chance = 1.0f });
+                    }
+                }
+                lsys.rules = customRules.ToArray();
+                break;
+        }
+
+        return lsys;
+    }
+
+    /// <summary>
+    /// Rebuild CityBlock list langsung dari grid cells yang terisi
+    /// (dipakai di L-System mode karena tidak ada hLines/vLines eksplisit).
+    /// Scan semua cell, cari rectangular region kosong di antara jalan.
+    /// </summary>
+    private void RebuildBlocksFromCells()
+    {
+        blocks.Clear();
+        if (gridPositions.Count == 0) return;
+
+        var cellSet = new HashSet<Vector3Int>(gridPositions);
+
+        // Kumpulkan unique X dan Z dari semua road cells
+        var xs = new SortedSet<int>();
+        var zs = new SortedSet<int>();
+        foreach (var c in gridPositions) { xs.Add(c.x); zs.Add(c.z); }
+
+        var xList = new List<int>(xs);
+        var zList = new List<int>(zs);
+
+        // Cari rectangular gap di antara road cells sebagai blok
+        for (int xi = 0; xi < xList.Count - 1; xi++)
+        {
+            for (int zi = 0; zi < zList.Count - 1; zi++)
+            {
+                int x0 = xList[xi];
+                int x1 = xList[xi + 1];
+                int z0 = zList[zi];
+                int z1 = zList[zi + 1];
+
+                // Blok minimal: ada jalan di keempat sisi
+                bool hasRoadW = cellSet.Contains(new Vector3Int(x0, 0, z0));
+                bool hasRoadE = cellSet.Contains(new Vector3Int(x1, 0, z0));
+                bool hasRoadS = cellSet.Contains(new Vector3Int(x0, 0, z1));
+
+                if (!hasRoadW || !hasRoadE || !hasRoadS) continue;
+
+                float wx0 = CellToWorld(x0);
+                float wx1 = CellToWorld(x1);
+                float wz0 = CellToWorld(z0);
+                float wz1 = CellToWorld(z1);
+
+                float bw = Mathf.Abs(wx1 - wx0) - roadWidth;
+                float bh = Mathf.Abs(wz1 - wz0) - roadWidth;
+
+                if (bw < MIN_BLOCK_DIM || bh < MIN_BLOCK_DIM) continue;
+
+                var block = new CityBlock
+                {
+                    center = new Vector3((wx0 + wx1) * 0.5f, 0f, (wz0 + wz1) * 0.5f),
+                    size   = new Vector2(bw, bh)
+                };
+                blocks.Add(block);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    /// <summary>World unit → cell integer (snap ke grid 1-unit cell).</summary>
+    private int WorldToCell(float worldPos) => Mathf.RoundToInt(worldPos / cellSize);
+
+    /// <summary>World Vector3 → cell Vector3Int.</summary>
+    private Vector3Int WorldToCell3(Vector3 worldPos) =>
+        new Vector3Int(WorldToCell(worldPos.x), 0, WorldToCell(worldPos.z));
+
+    /// <summary>Cell integer → world center of cell.</summary>
+    private float CellToWorld(int cell) => cell * cellSize;
+
+    // =======================================================================
+    // REBUILD ROADS FROM GRID
+    // =======================================================================
+    private void RebuildRoadsFromGrid(List<float> hWorldZ, List<float> vWorldX)
+    {
+        roads.Clear();
+        horizontalRoads.Clear();
+        verticalRoads.Clear();
         hLines.Clear();
         vLines.Clear();
-        foreach (var s in horizontalRoads) hLines.Add(s.start.z);
-        foreach (var s in verticalRoads)   vLines.Add(s.start.x);
-    }
 
-    private List<RoadSegment> Cleaned(List<RoadSegment> src)
-    {
-        var clean = new List<RoadSegment>();
-        var seen  = new HashSet<string>();
+        float xMin = -halfSize;
+        float xMax =  halfSize;
+        float zMin = -halfSize;
+        float zMax =  halfSize;
 
-        float minX = origin.x - halfSize - EPS;
-        float maxX = origin.x + halfSize + EPS;
-        float minZ = origin.z - halfSize - EPS;
-        float maxZ = origin.z + halfSize + EPS;
-
-        foreach (var s in src)
+        // Horizontal roads — satu segment per H-line, full lebar kota
+        foreach (float wz in hWorldZ)
         {
-            if (s.start.x < minX || s.start.x > maxX) continue;
-            if (s.end.x   < minX || s.end.x   > maxX) continue;
-            if (s.start.z < minZ || s.start.z > maxZ) continue;
-            if (s.end.z   < minZ || s.end.z   > maxZ) continue;
-
-            if (Vector3.Distance(s.start, s.end) < MIN_SEG_LEN) continue;
-
-            string key = $"{Mathf.Round(s.start.x * 2f)},{Mathf.Round(s.start.z * 2f)}"
-                       + $"->{Mathf.Round(s.end.x * 2f)},{Mathf.Round(s.end.z * 2f)}";
-            if (seen.Contains(key)) continue;
-            seen.Add(key);
-
-            clean.Add(s);
+            var seg = new RoadSegment(
+                new Vector3(xMin, 0f, wz),
+                new Vector3(xMax, 0f, wz),
+                roadWidth * SEC_W);
+            roads.Add(seg);
+            horizontalRoads.Add(seg);
+            if (!hLines.Contains(wz)) hLines.Add(wz);
         }
-        return clean;
-    }
 
-    // =======================================================================
-    // COMMIT METHODS
-    // ALL road placement goes through these - orthogonality enforced here.
-    // =======================================================================
-
-    // Force-commit (ring road only, bypasses FarEnough check)
-    private void ForceH(float z, float x0, float x1, float w)
-    {
-        hLines.Add(z);
-        horizontalRoads.Add(new RoadSegment(
-            new Vector3(Mathf.Min(x0, x1), 0f, z),
-            new Vector3(Mathf.Max(x0, x1), 0f, z), w));
-    }
-
-    private void ForceV(float x, float z0, float z1, float w)
-    {
-        vLines.Add(x);
-        verticalRoads.Add(new RoadSegment(
-            new Vector3(x, 0f, Mathf.Min(z0, z1)),
-            new Vector3(x, 0f, Mathf.Max(z0, z1)), w));
-    }
-
-    // Validated commit - returns true if segment was placed
-    private bool TryH(float z, float x0, float x1, float w)
-    {
-        if (!FarEnough(z, hLines))                 return false;
-        if (!InBounds(x0, z) || !InBounds(x1, z)) return false;
-        if (Mathf.Abs(x1 - x0) < MIN_SEG_LEN)     return false;
-
-        hLines.Add(z);
-        horizontalRoads.Add(new RoadSegment(
-            new Vector3(Mathf.Min(x0, x1), 0f, z),
-            new Vector3(Mathf.Max(x0, x1), 0f, z), w));
-        return true;
-    }
-
-    private bool TryV(float x, float z0, float z1, float w)
-    {
-        if (!FarEnough(x, vLines))                 return false;
-        if (!InBounds(x, z0) || !InBounds(x, z1)) return false;
-        if (Mathf.Abs(z1 - z0) < MIN_SEG_LEN)     return false;
-
-        vLines.Add(x);
-        verticalRoads.Add(new RoadSegment(
-            new Vector3(x, 0f, Mathf.Min(z0, z1)),
-            new Vector3(x, 0f, Mathf.Max(z0, z1)), w));
-        return true;
-    }
-
-    // =======================================================================
-    // VALIDATION
-    // =======================================================================
-
-    /// <summary>
-    /// Ensures proposed position is at least 3 road-widths from every
-    /// existing line on the same axis, preventing near-duplicate parallels.
-    /// </summary>
-    private bool FarEnough(float pos, List<float> existing)
-    {
-        float minGap = roadWidth * 3f;
-        foreach (float e in existing)
-            if (Mathf.Abs(e - pos) < minGap) return false;
-        return true;
-    }
-
-    private bool InBounds(float x, float z)
-    {
-        float pad = roadWidth * 0.5f;
-        return x >= origin.x - halfSize + pad - EPS
-            && x <= origin.x + halfSize - pad + EPS
-            && z >= origin.z - halfSize + pad - EPS
-            && z <= origin.z + halfSize - pad + EPS;
-    }
-
-    // =======================================================================
-    // INTERSECTION COMPUTATION
-    // Pure orthogonal grid: every (H road, V road) pair that spatially
-    // overlaps produces exactly one intersection at (v.x, h.z).
-    // =======================================================================
-    private void ComputeIntersections()
-    {
-        intersections.Clear();
-        var seen = new HashSet<long>();
-
-        foreach (var h in horizontalRoads)
+        // Vertical roads — satu segment per V-line, full tinggi kota
+        foreach (float wx in vWorldX)
         {
-            float hMinX = Mathf.Min(h.start.x, h.end.x) - EPS;
-            float hMaxX = Mathf.Max(h.start.x, h.end.x) + EPS;
-            float hz    = h.start.z;
-
-            foreach (var v in verticalRoads)
-            {
-                float vMinZ = Mathf.Min(v.start.z, v.end.z) - EPS;
-                float vMaxZ = Mathf.Max(v.start.z, v.end.z) + EPS;
-                float vx    = v.start.x;
-
-                if (vx < hMinX || vx > hMaxX) continue;
-                if (hz < vMinZ || hz > vMaxZ) continue;
-
-                long key = ((long)(Mathf.Round(vx * 10f) + 32768)) * 1_000_000L
-                         +  (long)(Mathf.Round(hz * 10f) + 32768);
-                if (seen.Contains(key)) continue;
-                seen.Add(key);
-
-                intersections.Add(new Vector3(vx, 0f, hz));
-            }
+            var seg = new RoadSegment(
+                new Vector3(wx, 0f, zMin),
+                new Vector3(wx, 0f, zMax),
+                roadWidth * SEC_W);
+            roads.Add(seg);
+            verticalRoads.Add(seg);
+            if (!vLines.Contains(wx)) vLines.Add(wx);
         }
     }
 
     // =======================================================================
-    // BLOCK LIST REBUILD
-    // Scans every adjacent (H-line pair) x (V-line pair) to find cells.
+    // BLOCKS
     // =======================================================================
     private void RebuildBlocks()
     {
         blocks.Clear();
-
         var sortH = new List<float>(hLines); sortH.Sort();
         var sortV = new List<float>(vLines); sortV.Sort();
 
@@ -426,21 +731,19 @@ public class RoadNetwork : MonoBehaviour
         {
             for (int j = 0; j < sortV.Count - 1; j++)
             {
-                // Interior edges (strip away road surface)
-                float z0 = sortH[i    ] + roadWidth * 0.5f;
+                float z0 = sortH[i]     + roadWidth * 0.5f;
                 float z1 = sortH[i + 1] - roadWidth * 0.5f;
-                float x0 = sortV[j    ] + roadWidth * 0.5f;
+                float x0 = sortV[j]     + roadWidth * 0.5f;
                 float x1 = sortV[j + 1] - roadWidth * 0.5f;
 
-                float w = x1 - x0;
-                float h = z1 - z0;
-
-                if (w < MIN_BLOCK_DIM || h < MIN_BLOCK_DIM) continue;
+                float bw = x1 - x0;
+                float bh = z1 - z0;
+                if (bw < MIN_BLOCK_DIM || bh < MIN_BLOCK_DIM) continue;
 
                 blocks.Add(new CityBlock
                 {
                     center    = new Vector3((x0 + x1) * 0.5f, 0f, (z0 + z1) * 0.5f),
-                    size      = new Vector2(w, h),
+                    size      = new Vector2(bw, bh),
                     blockType = BlockType.Residential
                 });
             }
@@ -448,273 +751,80 @@ public class RoadNetwork : MonoBehaviour
     }
 
     // =======================================================================
-    // ROAD MESH GENERATION
-    // Simple reliable approach:
-    //   1. Full-length flat quad for every road segment (same as before).
-    //   2. Per intersection: solid centre box (uses actual road widths).
-    //   3. Per intersection corner: quarter-circle fan fills the notch in
-    //      the block corner so kerbs look rounded.
-    // The road quads and intersection box overlap intentionally - the box
-    // sits on top and covers the join.  No trimming needed.
+    // JUNCTIONS
     // =======================================================================
-    private void BuildRoadMesh()
+    public enum JunctionType { Cross, T_North, T_South, T_East, T_West, Corner, Straight }
+
+    public struct JunctionInfo
     {
-        if (roadMeshObject != null)
-        {
-            if (Application.isPlaying) Destroy(roadMeshObject);
-            else DestroyImmediate(roadMeshObject);
-        }
-
-        roadMeshObject = new GameObject("RoadMesh");
-        roadMeshObject.transform.SetParent(cityGenerator.transform);
-        cityGenerator.RegisterSpawnedObject(roadMeshObject);
-
-        MeshFilter   mf = roadMeshObject.AddComponent<MeshFilter>();
-        MeshRenderer mr = roadMeshObject.AddComponent<MeshRenderer>();
-
-        mr.sharedMaterial = cityGenerator.roadMaterial != null
-            ? cityGenerator.roadMaterial
-            : CityGenerator.CreateMaterial("Road", new Color(0.18f, 0.18f, 0.20f));
-
-        var verts = new List<Vector3>();
-        var tris  = new List<int>();
-        var uvs   = new List<Vector2>();
-        int vi    = 0;
-
-        // 1. Full road quads
-        foreach (var seg in horizontalRoads) vi = AddSegMesh(seg, verts, tris, uvs, vi);
-        foreach (var seg in verticalRoads)   vi = AddSegMesh(seg, verts, tris, uvs, vi);
-
-        // 2. Intersection centre boxes + 3. corner fillets
-        foreach (var pt in intersections)
-        {
-            vi = AddCrossMesh(pt, verts, tris, uvs, vi);
-            vi = AddCornerFillets(pt, verts, tris, uvs, vi);
-        }
-
-        var mesh = new Mesh
-        {
-            name        = "CityRoadMesh",
-            indexFormat = UnityEngine.Rendering.IndexFormat.UInt32
-        };
-        mesh.SetVertices(verts);
-        mesh.SetTriangles(tris, 0);
-        mesh.SetUVs(0, uvs);
-        mesh.RecalculateNormals();
-        mesh.RecalculateBounds();
-        mf.mesh = mesh;
+        public Vector3      position;
+        public JunctionType type;
+        public float        width;
+        public bool         hasN, hasS, hasE, hasW;
     }
 
-    /// <summary>One flat quad for a full road segment.</summary>
-    private int AddSegMesh(RoadSegment seg,
-                           List<Vector3> verts, List<int> tris,
-                           List<Vector2> uvs, int si)
+    private void ComputeIntersections()
     {
-        Vector3 dir  = (seg.end - seg.start).normalized;
-        Vector3 perp = Vector3.Cross(dir, Vector3.up) * (seg.width * 0.5f);
+        intersections.Clear();
+        junctions.Clear();
+        var seen = new HashSet<long>();
 
-        verts.Add(seg.start - perp);
-        verts.Add(seg.start + perp);
-        verts.Add(seg.end   + perp);
-        verts.Add(seg.end   - perp);
-
-        float uvLen = Mathf.Max(Vector3.Distance(seg.start, seg.end) / seg.width, 0.01f);
-        uvs.Add(new Vector2(0f, 0f));
-        uvs.Add(new Vector2(1f, 0f));
-        uvs.Add(new Vector2(1f, uvLen));
-        uvs.Add(new Vector2(0f, uvLen));
-
-        tris.Add(si); tris.Add(si + 1); tris.Add(si + 2);
-        tris.Add(si); tris.Add(si + 2); tris.Add(si + 3);
-        return si + 4;
-    }
-
-    /// <summary>
-    /// Solid rectangle fill at intersection centre, sized to the actual road widths.
-    /// </summary>
-    private int AddCrossMesh(Vector3 c,
-                             List<Vector3> verts, List<int> tris,
-                             List<Vector2> uvs, int si)
-    {
-        float hW = roadWidth, vW = roadWidth;
-        foreach (var h in horizontalRoads)
+        // Setiap pasangan (H-line, V-line) = intersection
+        foreach (float hz in hLines)
         {
-            if (Mathf.Abs(h.start.z - c.z) > EPS) continue;
-            float minX = Mathf.Min(h.start.x, h.end.x) - EPS;
-            float maxX = Mathf.Max(h.start.x, h.end.x) + EPS;
-            if (c.x >= minX && c.x <= maxX) { hW = h.width; break; }
-        }
-        foreach (var v in verticalRoads)
-        {
-            if (Mathf.Abs(v.start.x - c.x) > EPS) continue;
-            float minZ = Mathf.Min(v.start.z, v.end.z) - EPS;
-            float maxZ = Mathf.Max(v.start.z, v.end.z) + EPS;
-            if (c.z >= minZ && c.z <= maxZ) { vW = v.width; break; }
-        }
-
-        float hw = hW * 0.5f; // half-width in Z
-        float vw = vW * 0.5f; // half-width in X
-
-        verts.Add(c + new Vector3(-vw, 0f, -hw));
-        verts.Add(c + new Vector3(-vw, 0f,  hw));
-        verts.Add(c + new Vector3( vw, 0f,  hw));
-        verts.Add(c + new Vector3( vw, 0f, -hw));
-        uvs.Add(new Vector2(0f, 0f)); uvs.Add(new Vector2(0f, 1f));
-        uvs.Add(new Vector2(1f, 1f)); uvs.Add(new Vector2(1f, 0f));
-        tris.Add(si); tris.Add(si + 1); tris.Add(si + 2);
-        tris.Add(si); tris.Add(si + 2); tris.Add(si + 3);
-        return si + 4;
-    }
-
-    /// <summary>
-    /// Adds quarter-circle fillet fans at each corner of an intersection.
-    ///
-    /// Visual idea:
-    ///   The intersection centre box has 4 corners.  At each corner the road
-    ///   surface currently has a sharp right-angle notch cut into the block.
-    ///   We fill that notch with a quarter-circle fan so the kerb looks rounded.
-    ///
-    ///   Each fan:
-    ///     pivot  = intersection corner point (±hw, ±vw from centre)
-    ///     radius = fillet radius (slightly less than half road width)
-    ///     arc    = 90° sweep pointing INTO the block (away from road centre)
-    ///     fan centre = pivot, triangles fan outward along the arc
-    ///
-    ///   This is ONLY a mesh change - road logic is not affected at all.
-    /// </summary>
-    private int AddCornerFillets(Vector3 center,
-                                 List<Vector3> verts, List<int> tris,
-                                 List<Vector2> uvs, int si)
-    {
-        const int STEPS = 8;
-
-        // Find actual widths of the H and V roads at this intersection
-        float hW = roadWidth, vW = roadWidth;
-        bool  hasH = false, hasV = false;
-
-        foreach (var h in horizontalRoads)
-        {
-            if (Mathf.Abs(h.start.z - center.z) > EPS) continue;
-            float minX = Mathf.Min(h.start.x, h.end.x) - EPS;
-            float maxX = Mathf.Max(h.start.x, h.end.x) + EPS;
-            if (center.x < minX || center.x > maxX) continue;
-            hasH = true; hW = h.width; break;
-        }
-        foreach (var v in verticalRoads)
-        {
-            if (Mathf.Abs(v.start.x - center.x) > EPS) continue;
-            float minZ = Mathf.Min(v.start.z, v.end.z) - EPS;
-            float maxZ = Mathf.Max(v.start.z, v.end.z) + EPS;
-            if (center.z < minZ || center.z > maxZ) continue;
-            hasV = true; vW = v.width; break;
-        }
-
-        if (!hasH || !hasV) return si;
-
-        float hw = hW * 0.5f;  // half-width of the horizontal road (extends in ±Z)
-        float vw = vW * 0.5f;  // half-width of the vertical   road (extends in ±X)
-
-        // Fillet radius: 80% of the smaller half-width
-        float radius = Mathf.Min(hw, vw) * 0.8f;
-        if (radius < 0.3f) return si;
-
-        // ----------------------------------------------------------------
-        // Four corners of the intersection box in XZ:
-        //   corner position = center + (±vw, ±hw)   [X, Z offsets]
-        //
-        // At each corner, the fillet arc sweeps 90° AWAY from the centre
-        // (i.e. into the block).  The arc goes from the Z-edge of the corner
-        // to the X-edge of the corner.
-        //
-        // Corner layout (top-down, X right, Z up):
-        //   NW(-vw,+hw)   NE(+vw,+hw)
-        //       ┌─────────────┐
-        //       │   centre    │
-        //       └─────────────┘
-        //   SW(-vw,-hw)   SE(+vw,-hw)
-        //
-        // For NE corner: pivot is the actual box corner (+vw, +hw).
-        //   The fillet arc bulges OUTWARD (toward +X+Z), so the pivot is
-        //   shifted inward by radius along BOTH axes:
-        //     arcPivot = (corner.x - radius, corner.z - radius)
-        //   The arc sweeps from angle 0° (+X) to 90° (+Z).
-        //
-        // Similarly for the other three corners.
-        // ----------------------------------------------------------------
-
-        // (signX, signZ) = direction from centre to corner
-        int[,] signs = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } };
-        // For each corner the arc sweeps from angle startDeg to endDeg
-        // The arc fills the gap between the two road edges at that corner.
-        // Angles measured CCW from +X axis in XZ plane.
-        float[,] arcAngles = {
-            // SW: from 270° down to 180° (sweeping through the block corner)
-            { 270f, 180f },
-            // SE: from   0° down to 270°
-            { 360f, 270f },
-            // NE: from  90° down to   0°
-            {  90f,   0f },
-            // NW: from 180° down to  90°
-            { 180f,  90f }
-        };
-
-        for (int c = 0; c < 4; c++)
-        {
-            int sx = signs[c, 0]; // ±1 in X
-            int sz = signs[c, 1]; // ±1 in Z
-
-            // Corner of the intersection box
-            float cornerX = center.x + sx * vw;
-            float cornerZ = center.z + sz * hw;
-
-            // Arc pivot is the corner shifted INWARD by radius on both axes
-            float pivotX = cornerX - sx * radius;
-            float pivotZ = cornerZ - sz * radius;
-            Vector3 pivot = new Vector3(pivotX, 0f, pivotZ);
-
-            float aDeg0 = arcAngles[c, 0];
-            float aDeg1 = arcAngles[c, 1];
-
-            // Fan: pivot vertex + arc ring vertices
-            int fanBase = si;
-            verts.Add(pivot);
-            uvs.Add(new Vector2(0.5f, 0.5f));
-            si++;
-
-            for (int s = 0; s <= STEPS; s++)
+            foreach (float vx in vLines)
             {
-                float t   = (float)s / STEPS;
-                float ang = Mathf.Lerp(aDeg0, aDeg1, t) * Mathf.Deg2Rad;
-                float px  = pivotX + Mathf.Cos(ang) * radius;
-                float pz  = pivotZ + Mathf.Sin(ang) * radius;
-                verts.Add(new Vector3(px, 0f, pz));
-                uvs.Add(new Vector2(t, (float)s / STEPS));
-                si++;
-            }
+                // Deduplicate pakai hash
+                long key = (long)(hz * 1000f + 500000f) * 10000000L
+                         + (long)(vx * 1000f + 500000f);
+                if (!seen.Add(key)) continue;
 
-            // Fan triangles (each tri: pivot, arc[s], arc[s+1])
-            for (int s = 0; s < STEPS; s++)
-            {
-                tris.Add(fanBase);
-                tris.Add(fanBase + 1 + s);
-                tris.Add(fanBase + 2 + s);
+                var pt = new Vector3(vx, 0f, hz);
+                intersections.Add(pt);
+
+                // Cari tetangga H dan V
+                bool hasE = false, hasW = false, hasN = false, hasS = false;
+                // Semua intersection di grid ortogonal punya 4 arah
+                // kecuali di boundary (periksa apakah ada road di sisi itu)
+                hasE = vLines.Exists(x => x > vx + EPS);
+                hasW = vLines.Exists(x => x < vx - EPS);
+                hasN = hLines.Exists(z => z > hz + EPS);
+                hasS = hLines.Exists(z => z < hz - EPS);
+
+                int arms = (hasE ? 1 : 0) + (hasW ? 1 : 0)
+                         + (hasN ? 1 : 0) + (hasS ? 1 : 0);
+
+                JunctionType jt;
+                if      (arms >= 4)    jt = JunctionType.Cross;
+                else if (arms == 3)
+                {
+                    if      (!hasN) jt = JunctionType.T_North;
+                    else if (!hasS) jt = JunctionType.T_South;
+                    else if (!hasE) jt = JunctionType.T_East;
+                    else            jt = JunctionType.T_West;
+                }
+                else if (arms == 2 && ((hasN || hasS) && (hasE || hasW)))
+                    jt = JunctionType.Corner;
+                else
+                    jt = JunctionType.Straight;
+
+                junctions.Add(new JunctionInfo
+                {
+                    position = pt,
+                    type     = jt,
+                    width    = roadWidth,
+                    hasN = hasN, hasS = hasS, hasE = hasE, hasW = hasW
+                });
             }
         }
-
-        return si;
     }
 
     // =======================================================================
-    // UTILITY
-    // =======================================================================
-    private float RandF(float min, float max)
-        => min + (float)rng.NextDouble() * (max - min);
-
-    // =======================================================================
-    // CLEAR
+    // CLEAR / RESET
     // =======================================================================
     public void ClearRoads()
     {
+        roads.Clear();
         horizontalRoads.Clear();
         verticalRoads.Clear();
         radialRoads.Clear();
@@ -723,58 +833,41 @@ public class RoadNetwork : MonoBehaviour
         gridRoads.Clear();
         intersections.Clear();
         blocks.Clear();
+        junctions.Clear();
+        gridPositions.Clear();
         hLines.Clear();
         vLines.Clear();
 
+        if (gridHelper != null)
+        {
+            gridHelper.Reset();
+            gridHelper = null;
+        }
         if (roadMeshObject != null)
         {
             if (Application.isPlaying) Destroy(roadMeshObject);
             else DestroyImmediate(roadMeshObject);
             roadMeshObject = null;
         }
-
-        foreach (var m in intersectionMarkers)
-            if (m != null)
-            {
-                if (Application.isPlaying) Destroy(m);
-                else DestroyImmediate(m);
-            }
-        intersectionMarkers.Clear();
     }
 
     // =======================================================================
-    // GIZMOS (Scene-view debug visualisation)
+    // GIZMOS
     // =======================================================================
     public void DrawGizmos()
     {
         if (cityGenerator == null) return;
 
-        float   hs  = cityGenerator.citySize * 0.5f;
-        Vector3 org = cityGenerator.transform.position;
+        Gizmos.color = Color.white;
+        foreach (var r in roads)
+            if (r.path != null)
+                for (int i = 0; i < r.path.Count - 1; i++)
+                    Gizmos.DrawLine(r.path[i], r.path[i + 1]);
 
-        // City boundary
-        Gizmos.color = Color.yellow;
-        Vector3 sw = org + new Vector3(-hs, 0f, -hs);
-        Vector3 se = org + new Vector3( hs, 0f, -hs);
-        Vector3 ne = org + new Vector3( hs, 0f,  hs);
-        Vector3 nw = org + new Vector3(-hs, 0f,  hs);
-        Gizmos.DrawLine(sw, se); Gizmos.DrawLine(se, ne);
-        Gizmos.DrawLine(ne, nw); Gizmos.DrawLine(nw, sw);
-
-        // Horizontal roads (gray)
-        Gizmos.color = Color.gray;
-        foreach (var r in horizontalRoads) Gizmos.DrawLine(r.start, r.end);
-
-        // Vertical roads (blue)
-        Gizmos.color = Color.blue;
-        foreach (var r in verticalRoads) Gizmos.DrawLine(r.start, r.end);
-
-        // Intersections (red spheres)
         Gizmos.color = Color.red;
-        foreach (var pt in intersections)
-            Gizmos.DrawSphere(pt, cityGenerator.roadWidth * 0.3f);
+        foreach (var j in junctions)
+            Gizmos.DrawSphere(j.position, cityGenerator.roadWidth * 0.3f);
 
-        // Blocks (cyan wireframes)
         Gizmos.color = Color.cyan;
         foreach (var b in blocks)
             Gizmos.DrawWireCube(b.center, new Vector3(b.size.x, 0.1f, b.size.y));
@@ -782,19 +875,49 @@ public class RoadNetwork : MonoBehaviour
 }
 
 // ===========================================================================
-// DATA STRUCT
+// ENUMS
+// ===========================================================================
+
+/// <summary>
+/// Preset L-System untuk berbagai karakter kota.
+/// Terinspirasi dari SVS Procedural Town example (LSystemGenerator + SimpleVisualizer).
+/// </summary>
+public enum LSystemPreset
+{
+    OrganicCity,    // Jalan bercabang organik — default SVS pattern X→F[-FX]+FX
+    ManhattanGrid,  // Grid rapat orthogonal ala NYC
+    HighwayAndAlley,// Arterial road panjang + gang pendek di sisi
+    RadialSprawl,   // Jalan memancar dari pusat seperti kota Eropa
+    Custom          // Pakai axiom/rules dari Inspector field
+}
+
+// ===========================================================================
+// DATA STRUCTS
 // ===========================================================================
 [System.Serializable]
 public struct RoadSegment
 {
-    public Vector3 start;
-    public Vector3 end;
-    public float   width;
+    public Vector3       start;
+    public Vector3       end;
+    public float         width;
+    public List<Vector3> path;
+    public int           hierarchy;
 
     public RoadSegment(Vector3 start, Vector3 end, float width)
     {
-        this.start = start;
-        this.end   = end;
-        this.width = width;
+        this.start     = start;
+        this.end       = end;
+        this.width     = width;
+        this.path      = new List<Vector3> { start, end };
+        this.hierarchy = 0;
+    }
+
+    public RoadSegment(List<Vector3> path, float width, int hierarchy)
+    {
+        this.start     = path[0];
+        this.end       = path[path.Count - 1];
+        this.width     = width;
+        this.path      = path;
+        this.hierarchy = hierarchy;
     }
 }
