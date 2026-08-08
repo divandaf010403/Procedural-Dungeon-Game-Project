@@ -4,89 +4,12 @@ using UnityEngine;
 [CustomEditor(typeof(CityGenerator))]
 public class CityGeneratorEditor : Editor
 {
-    private bool showLSystemHelp = false;
-
     public override void OnInspectorGUI()
     {
         DrawDefaultInspector();
 
         CityGenerator gen = (CityGenerator)target;
         RoadNetwork   rn  = gen.GetComponent<RoadNetwork>();
-
-        // ---------------------------------------------------------------
-        // L-System Quick Presets
-        // Hanya tampil jika mode menggunakan L-System
-        // ---------------------------------------------------------------
-        if (rn != null && rn.generationMode != RoadNetwork.RoadGenerationMode.OrthogonalGrid)
-        {
-            EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("L-System Presets", EditorStyles.boldLabel);
-
-            EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Organic\nCity"))
-            {
-                rn.lSystemPreset         = LSystemPreset.OrganicCity;
-                rn.lSystemIterations     = 4;
-                rn.lSystemChanceToIgnore = 0.3f;
-                rn.lSystemStepSize       = 0f; // auto dari blockSpacing
-                rn.lSystemOriginCount    = 4;
-                EditorUtility.SetDirty(rn);
-            }
-            if (GUILayout.Button("Manhattan\nGrid"))
-            {
-                rn.lSystemPreset         = LSystemPreset.ManhattanGrid;
-                rn.lSystemIterations     = 3;
-                rn.lSystemChanceToIgnore = 0.1f;
-                rn.lSystemStepSize       = 0f;
-                rn.lSystemOriginCount    = 6;
-                EditorUtility.SetDirty(rn);
-            }
-            if (GUILayout.Button("Highway\n+Alley"))
-            {
-                rn.lSystemPreset         = LSystemPreset.HighwayAndAlley;
-                rn.lSystemIterations     = 4;
-                rn.lSystemChanceToIgnore = 0.2f;
-                rn.lSystemStepSize       = 0f;
-                rn.lSystemOriginCount    = 3;
-                EditorUtility.SetDirty(rn);
-            }
-            if (GUILayout.Button("Radial\nSprawl"))
-            {
-                rn.lSystemPreset         = LSystemPreset.RadialSprawl;
-                rn.lSystemIterations     = 3;
-                rn.lSystemChanceToIgnore = 0.25f;
-                rn.lSystemStepSize       = 0f;
-                rn.lSystemOriginCount    = 1; // dari pusat saja
-                EditorUtility.SetDirty(rn);
-            }
-            EditorGUILayout.EndHorizontal();
-
-            // Mode-specific info box
-            if (rn.generationMode == RoadNetwork.RoadGenerationMode.RingAndLSystem)
-            {
-                EditorGUILayout.HelpBox(
-                    "RingAndLSystem: Jalan kotak mengelilingi kota sebagai batas luar.\n" +
-                    "L-System tumbuh di interior — organik, tidak ada grid di dalam.\n" +
-                    "FixRoad() sekali di akhir → junction ring dan L-System menyatu.",
-                    MessageType.Info);
-            }
-
-            // Symbol reference foldout
-            showLSystemHelp = EditorGUILayout.Foldout(showLSystemHelp, "L-System Symbol Reference");
-            if (showLSystemHelp)
-            {
-                EditorGUILayout.LabelField(
-                    "F = maju + place road\n" +
-                    "f = maju tanpa road\n" +
-                    "+ = belok kanan 90°\n" +
-                    "- = belok kiri 90°\n" +
-                    "| = balik 180°\n" +
-                    "[ = push state (cabang)\n" +
-                    "] = pop state\n" +
-                    "X = growth marker (expansion only)",
-                    EditorStyles.helpBox);
-            }
-        }
 
         // ---------------------------------------------------------------
         // Seed controls

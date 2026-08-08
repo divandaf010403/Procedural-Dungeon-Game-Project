@@ -28,7 +28,7 @@ public class CityGenerator : MonoBehaviour
     public float blockSize = 40f;
 
     [Range(2f, 12f)]
-    public float roadWidth = 6f;
+    public float roadWidth = 3f;
 
     public int randomSeed = 42;
 

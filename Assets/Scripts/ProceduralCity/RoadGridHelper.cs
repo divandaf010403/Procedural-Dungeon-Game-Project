@@ -2,38 +2,64 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// RoadGridHelper — grid-based road placement.
+/// RoadGridHelper — tile-based road placement (SVS style).
 ///
-/// Setiap cell integer = 1 tile jalan (lebar = cellSize).
-/// Dictionary&lt;Vector3Int, GameObject&gt; menyimpan placeholder per cell.
-/// FixRoad() klasifikasi neighbour → bangun 1 mesh gabungan terpadu.
+/// Setiap cell integer = 1 prefab jalan.
+/// PlaceStreetPositions() instantiate roadStraight per tile.
+/// FixRoad() klasifikasi tetangga → destroy tile lama, instantiate prefab yang tepat:
+///   roadEnd, roadStraight, roadCorner, road3Way, road4Way.
 ///
-/// BUG FIXES dibanding versi lama:
-///   - gridSnapshot di-clear di Reset() → tidak ada stale data antar generate
-///   - Straight tile pakai Square (bukan AddQuad) → tidak ada gap di junction
-///   - Corner mesh pakai 4 vertex unik (bukan duplikat SW)
-///   - Tile world position pakai origin offset dari parent jika ada
+/// Identik dengan logika SVS RoadHelper, tapi support skala kota penuh
+/// (cellSize != 1, posisi di-scale dari cell ke world).
 /// </summary>
 public class RoadGridHelper
 {
-    // Key = cell integer (grid space), value = placeholder (bisa null setelah FixRoad)
+    // Key = cell integer (grid space), value = GameObject prefab ter-instantiate
     public readonly Dictionary<Vector3Int, GameObject> roadDictionary =
         new Dictionary<Vector3Int, GameObject>();
 
-    // Semua cell yang pernah di-place — dipakai FixRoad untuk klasifikasi
-    private HashSet<Vector3Int> gridSnapshot = new HashSet<Vector3Int>();
+    // Semua cell yang pernah di-place — dipakai FixRoad untuk klasifikasi tetangga
+    private readonly HashSet<Vector3Int> gridSnapshot = new HashSet<Vector3Int>();
 
-    // Hanya ujung-ujung segmen yang perlu di-fix junction
+    // Expose untuk ExportRoadMap di RoadNetwork
+    public HashSet<Vector3Int> GridSnapshot => gridSnapshot;
+
+    // Cell ring road — dipakai FixRoad untuk klasifikasi T/+ di ring.
+    // Set dari RoadNetwork.PlaceRingRoad().
+    public readonly HashSet<Vector3Int> ringCells = new HashSet<Vector3Int>();
+
+    // Batas ring — disalin dari RoadNetwork supaya decorator bisa tahu
+    // batas ring tanpa membaca state RoadNetwork.
+    private int ringMinX, ringMaxX, ringMinZ, ringMaxZ;
+    public void SetRingBounds(int minX, int maxX, int minZ, int maxZ)
+    {
+        ringMinX = minX; ringMaxX = maxX;
+        ringMinZ = minZ; ringMaxZ = maxZ;
+    }
+
+    // Hanya ujung segmen + semua cell yang perlu di-fix junctionnya
     private readonly HashSet<Vector3Int> fixRoadCandidates = new HashSet<Vector3Int>();
 
-    private readonly GameObject parent;
-    private readonly Material   roadMat;
-    public  readonly float      cellSize;
+    private readonly Transform parent;
+    public  readonly float     cellSize;
 
-    public RoadGridHelper(GameObject parent, Material roadMat, float cellSize)
+    // Ukuran tile dalam world units — dipakai CellToWorld untuk convert cell → world
+    // cellSize = 1 (grid integer), tileWorldSize = ukuran visual prefab
+    public float tileWorldSize = 1f;
+
+    // Prefab referensi — di-set dari RoadNetwork
+    public GameObject prefabStraight;
+    public GameObject prefabCorner;
+    public GameObject prefab3Way;
+    public GameObject prefab4Way;
+    public GameObject prefabEnd;
+
+    // Scale diterapkan ke tiap tile saat instantiate
+    public Vector3 tileScale = Vector3.one;
+
+    public RoadGridHelper(Transform parent, float cellSize)
     {
         this.parent   = parent;
-        this.roadMat  = roadMat;
         this.cellSize = cellSize;
     }
 
@@ -45,178 +71,269 @@ public class RoadGridHelper
 
     /// <summary>
     /// Place N tile jalan lurus dari startPosition ke direction.
-    /// Tile yang sudah ada di-skip (tidak double-place).
+    /// Instantiate roadStraight per tile, skip jika sudah ada.
+    /// Semua tile di-masukkan ke fixRoadCandidates supaya FixRoad
+    /// bisa swap ke prefab yang tepat berdasarkan tetangga.
     /// </summary>
     public void PlaceStreetPositions(Vector3Int startPosition, Vector3Int direction, int length)
     {
+        if (prefabStraight == null)
+        {
+            Debug.LogWarning("[RoadGridHelper] prefabStraight belum di-assign!");
+            return;
+        }
+
+        // Rotasi default: arah Z (North-South) = 90°Y, arah X (East-West) = 180°Y
+        // +90 offset karena prefab road punya rotation Y=90 secara default
+        Quaternion rotation = (direction.x != 0)
+            ? Quaternion.Euler(0f, 180f, 0f)
+            : Quaternion.Euler(0f, 90f, 0f);
+
         for (int i = 0; i < length; i++)
         {
             var pos = startPosition + direction * i;
             if (roadDictionary.ContainsKey(pos)) continue;
 
-            // Placeholder kosong — FixRoad akan bangun mesh sesudahnya
-            var tile = new GameObject($"RoadCell_{pos.x}_{pos.z}");
-            tile.transform.SetParent(parent.transform);
+            Vector3 worldPos = CellToWorld(pos);
+            var tile = Object.Instantiate(prefabStraight, worldPos, rotation, parent);
+            tile.transform.localScale = tileScale;
+            tile.name = $"Road_{pos.x}_{pos.z}";
+
             roadDictionary.Add(pos, tile);
             gridSnapshot.Add(pos);
 
+            // Hanya ujung segmen jadi kandidat fix junction
             if (i == 0 || i == length - 1)
                 fixRoadCandidates.Add(pos);
         }
     }
 
     // -----------------------------------------------------------------------
-    // FIX / MESH BUILD
+    // FIX ROAD — SVS style
     // -----------------------------------------------------------------------
 
     /// <summary>
-    /// Hapus semua placeholder, klasifikasi tiap cell berdasarkan 4-neighbour,
-    /// lalu bangun 1 combined mesh untuk seluruh jaringan jalan.
+    /// Untuk setiap kandidat cell: hitung jumlah tetangga (N/S/E/W),
+    /// destroy tile yang ada, instantiate prefab yang sesuai.
+    ///   1 tetangga  → roadEnd
+    ///   2 lurus     → roadStraight (dengan rotasi yang benar)
+    ///   2 belok     → roadCorner
+    ///   3 tetangga  → road3Way
+    ///   4 tetangga  → road4Way
     /// </summary>
     public void FixRoad()
     {
-        // Hapus placeholder
-        foreach (var go in roadDictionary.Values)
-            if (go != null) Object.DestroyImmediate(go);
-        roadDictionary.Clear();
-
-        if (gridSnapshot.Count == 0) return;
-
-        var verts = new List<Vector3>();
-        var tris  = new List<int>();
-        var uvs   = new List<Vector2>();
-
+        // Sweep semua cell — bukan hanya ujung segmen —
+        // supaya junction di tengah segmen juga ter-detect.
         foreach (var pos in gridSnapshot)
         {
-            int bits = GetNeighbourBits(pos);
-            // World center cell — ingat: pos adalah cell integer, world = pos * cellSize
-            Vector3 center = new Vector3(pos.x * cellSize, 0.002f, pos.z * cellSize);
-            float   h      = cellSize * 0.5f;
+            if (!roadDictionary.ContainsKey(pos)) continue;
 
-            // Semua tile pakai Square penuh → tidak ada gap di pertemuan sel manapun.
-            // Pendekatan "full square per cell" adalah cara yang benar untuk tile-based road:
-            //   - Straight H/V: square penuh = ok karena lebarnya sama dengan cellSize
-            //   - Junction: square penuh = sudah benar
-            // Gap hanya muncul jika straight tile dipersempit (rect < cellSize) lalu
-            // bertemu junction — kita hindari dengan selalu pakai square.
-            AddSquare(center, h, verts, tris, uvs);
+            bool hasN = gridSnapshot.Contains(pos + new Vector3Int( 0, 0,  1));
+            bool hasS = gridSnapshot.Contains(pos + new Vector3Int( 0, 0, -1));
+            bool hasE = gridSnapshot.Contains(pos + new Vector3Int( 1, 0,  0));
+            bool hasW = gridSnapshot.Contains(pos + new Vector3Int(-1, 0,  0));
+
+            int count = (hasN ? 1 : 0) + (hasS ? 1 : 0)
+                      + (hasE ? 1 : 0) + (hasW ? 1 : 0);
+
+            // Isolated tile (0 koneksi) — buang, bukan jadikan straight/end palsu.
+            // FIX: ring cell TIDAK boleh dihapus — ring adalah loop tertutup,
+            // tetap jadikan straight (bukan O) supaya tidak ada gap di ring.
+            if (count == 0)
+            {
+                if (ringCells.Contains(pos))
+                {
+                    // Ring isolated — tetap jalan (straight), bukan endpoint.
+                    // Orientasi ditentukan dari arah tetangga ring.
+                    bool ringN = ringCells.Contains(pos + new Vector3Int( 0, 0,  1));
+                    bool ringS = ringCells.Contains(pos + new Vector3Int( 0, 0, -1));
+                    bool ringE = ringCells.Contains(pos + new Vector3Int( 1, 0,  0));
+                    bool ringW = ringCells.Contains(pos + new Vector3Int(-1, 0,  0));
+                    bool horiz = (ringE || ringW) && !(ringN || ringS);
+                    var worldPos0 = CellToWorld(pos);
+                    var keepTile = Object.Instantiate(prefabStraight != null ? prefabStraight : prefabEnd,
+                        worldPos0,
+                        horiz ? Quaternion.Euler(0f, 90f, 0f) : Quaternion.identity,
+                        parent);
+                    keepTile.transform.localScale = tileScale;
+                    keepTile.name = $"Road_{pos.x}_{pos.z}";
+                    Object.DestroyImmediate(roadDictionary[pos]);
+                    roadDictionary[pos] = keepTile;
+                    continue;
+                }
+                Object.DestroyImmediate(roadDictionary[pos]);
+                roadDictionary.Remove(pos);
+                gridSnapshot.Remove(pos);
+                continue;
+            }
+
+            // Hapus tile lama
+            Object.DestroyImmediate(roadDictionary[pos]);
+
+            Vector3    worldPos = CellToWorld(pos);
+            Quaternion rot      = Quaternion.identity;
+            GameObject prefab;
+
+            if (ringCells.Contains(pos))
+            {
+                // ===== Ring cell: wajib menyambung ring, tidak boleh jadi O =====
+                // Hitung koneksi yang mengikuti arah ring vs yang dari interior
+                bool ringN = ringCells.Contains(pos + new Vector3Int( 0, 0,  1));
+                bool ringS = ringCells.Contains(pos + new Vector3Int( 0, 0, -1));
+                bool ringE = ringCells.Contains(pos + new Vector3Int( 1, 0,  0));
+                bool ringW = ringCells.Contains(pos + new Vector3Int(-1, 0,  0));
+
+                int ringArms = (ringN?1:0) + (ringS?1:0) + (ringE?1:0) + (ringW?1:0);
+
+                if (ringArms >= 2 && count >= 4)
+                {
+                    // Ring + interior 2 arah = perempatan
+                    prefab = prefab4Way != null ? prefab4Way : prefabStraight;
+                }
+                else if (ringArms >= 2 && count >= 3)
+                {
+                    // Ring 2 arah + 1 interior = T-junction
+                    prefab = prefab3Way != null ? prefab3Way : prefabStraight;
+                    if      (!hasN) rot = Quaternion.Euler(0f,   0f, 0f);
+                    else if (!hasE) rot = Quaternion.Euler(0f,  90f, 0f);
+                    else if (!hasS) rot = Quaternion.Euler(0f, 180f, 0f);
+                    else            rot = Quaternion.Euler(0f, 270f, 0f);
+                }
+                else if (ringArms >= 1 && count >= 2)
+                {
+                    // Ring 1 arah + 1 interior = corner di ring
+                    prefab = prefabCorner != null ? prefabCorner : prefabStraight;
+                    if      (hasN && hasE) rot = Quaternion.Euler(0f,   0f, 0f);
+                    else if (hasE && hasS) rot = Quaternion.Euler(0f,  90f, 0f);
+                    else if (hasS && hasW) rot = Quaternion.Euler(0f, 180f, 0f);
+                    else if (hasW && hasN) rot = Quaternion.Euler(0f, 270f, 0f);
+                    else
+                    {
+                        // Ring 1 arah tanpa interior — straight di ring
+                        prefab = prefabStraight;
+                        rot    = (hasE && hasW) || (!hasN && !hasS && (ringE || ringW))
+                            ? Quaternion.Euler(0f, 90f, 0f)
+                            : Quaternion.identity;
+                    }
+                }
+                else
+                {
+                    // Ring cell terisolasi di ring — tetap straight mengikuti ring
+                    prefab = prefabStraight;
+                    rot    = (hasE || hasW)
+                        ? Quaternion.Euler(0f, 90f, 0f)
+                        : Quaternion.identity;
+                }
+            }
+            else if (count >= 4)
+            {
+                // Perempatan — tidak perlu rotasi
+                prefab = prefab4Way != null ? prefab4Way : prefabStraight;
+            }
+            else if (count == 3)
+            {
+                // T-junction — rotasi berdasarkan arah yang tidak ada
+                prefab = prefab3Way != null ? prefab3Way : prefabStraight;
+                if      (!hasN) rot = Quaternion.Euler(0f,   0f, 0f); // T menghadap S
+                else if (!hasE) rot = Quaternion.Euler(0f,  90f, 0f); // T menghadap W
+                else if (!hasS) rot = Quaternion.Euler(0f, 180f, 0f); // T menghadap N
+                else            rot = Quaternion.Euler(0f, 270f, 0f); // T menghadap E (!hasW)
+            }
+            else if (count == 2)
+            {
+                bool straight = (hasN && hasS) || (hasE && hasW);
+                if (straight)
+                {
+                    // Lurus — H atau V
+                    prefab = prefabStraight != null ? prefabStraight : prefabStraight;
+                    rot    = hasE && hasW
+                        ? Quaternion.Euler(0f, 90f, 0f)  // horizontal E-W
+                        : Quaternion.identity;            // vertical N-S
+                }
+                else
+                {
+                    // Corner — 4 kemungkinan L-shape
+                    prefab = prefabCorner != null ? prefabCorner : prefabStraight;
+                    if      (hasN && hasE) rot = Quaternion.Euler(0f,   0f, 0f);
+                    else if (hasE && hasS) rot = Quaternion.Euler(0f,  90f, 0f);
+                    else if (hasS && hasW) rot = Quaternion.Euler(0f, 180f, 0f);
+                    else                   rot = Quaternion.Euler(0f, 270f, 0f); // hasW && hasN
+                }
+            }
+            else
+            {
+                // Dead-end (1 tetangga)
+                prefab = prefabEnd != null ? prefabEnd : prefabStraight;
+                if      (hasS) rot = Quaternion.Euler(0f,   0f, 0f); // ujung mengarah S
+                else if (hasW) rot = Quaternion.Euler(0f,  90f, 0f);
+                else if (hasN) rot = Quaternion.Euler(0f, 180f, 0f);
+                else if (hasE) rot = Quaternion.Euler(0f, 270f, 0f);
+            }
+
+            if (prefab == null)
+            {
+                Debug.LogWarning($"[RoadGridHelper] Prefab null untuk pos {pos}, count={count}");
+                roadDictionary[pos] = null;
+                continue;
+            }
+
+            // +90° offset di Y karena prefab road punya rotation Y=90 secara default
+            rot = rot * Quaternion.Euler(0f, 90f, 0f);
+
+            var newTile = Object.Instantiate(prefab, worldPos, rot, parent);
+            newTile.transform.localScale = tileScale;
+            newTile.name = $"Road_{pos.x}_{pos.z}";
+            roadDictionary[pos] = newTile;
         }
-
-        BuildMesh(verts, tris, uvs, "RoadMesh_Combined");
     }
 
     // -----------------------------------------------------------------------
-    // NEIGHBOUR CLASSIFICATION
+    // HELPERS
     // -----------------------------------------------------------------------
 
-    // Bit mask: N=bit0, E=bit1, S=bit2, W=bit3
-    private int GetNeighbourBits(Vector3Int pos)
+    /// <summary>Cell integer → world position center of cell.</summary>
+    public Vector3 CellToWorld(Vector3Int cell) =>
+        new Vector3(cell.x * tileWorldSize, 0f, cell.z * tileWorldSize);
+
+    /// <summary>Bitmask koneksi cell (N=1,E=2,S=4,W=8) dari snapshot — untuk decorator.</summary>
+    public int GetMaskAt(Vector3Int cell)
     {
-        int bits = 0;
-        if (gridSnapshot.Contains(pos + new Vector3Int( 0, 0,  1))) bits |= 1; // N
-        if (gridSnapshot.Contains(pos + new Vector3Int( 1, 0,  0))) bits |= 2; // E
-        if (gridSnapshot.Contains(pos + new Vector3Int( 0, 0, -1))) bits |= 4; // S
-        if (gridSnapshot.Contains(pos + new Vector3Int(-1, 0,  0))) bits |= 8; // W
-        return bits;
+        int mask = 0;
+        if (gridSnapshot.Contains(cell + new Vector3Int( 0, 0,  1))) mask |= 1;
+        if (gridSnapshot.Contains(cell + new Vector3Int( 1, 0,  0))) mask |= 2;
+        if (gridSnapshot.Contains(cell + new Vector3Int( 0, 0, -1))) mask |= 4;
+        if (gridSnapshot.Contains(cell + new Vector3Int(-1, 0,  0))) mask |= 8;
+        return mask;
     }
+
+    /// <summary>Prefab tile yang ada di cell (null jika kosong) — untuk parent add-on.</summary>
+    public GameObject GetTileAt(Vector3Int cell) =>
+        roadDictionary.TryGetValue(cell, out var go) ? go : null;
+
+    /// <summary>Apakah cell adalah bagian ring road.</summary>
+    public bool IsRingCell(int x, int z) => ringCells.Contains(new Vector3Int(x, 0, z));
+
+    /// <summary>Batas ring — untuk penempatan add-on di sepanjang ring.</summary>
+    public int RingMinX => ringMinX;
+    public int RingMinZ => ringMinZ;
+    public int RingMaxX => ringMaxX;
+    public int RingMaxZ => ringMaxZ;
+
+    // -----------------------------------------------------------------------
+    // REMOVE
+    // -----------------------------------------------------------------------
 
     /// <summary>
-    /// Klasifikasi tipe tile dari neighbour bits.
-    /// Return: 0=End, 1=Straight_H, 2=Straight_V, 3=Corner, 4=T, 5=Cross
+    /// Hapus satu cell jalan (prefab + dari snapshot). Dipakai cleanup
+    /// RemoveDisconnectedInnerRoads — cell terisolasi yang tidak reachable.
     /// </summary>
-    public static int Classify(int bits)
+    public void RemoveRoadCell(Vector3Int pos)
     {
-        int count = CountBits(bits);
-        if (count >= 4) return 5; // Cross
-        if (count == 3) return 4; // T
-        if (count == 2)
-        {
-            // Straight: N+S atau E+W
-            if (bits == 0b0101) return 2; // N+S = straight vertikal
-            if (bits == 0b1010) return 1; // E+W = straight horizontal
-            return 3;                      // diagonal pair = corner
-        }
-        // count 0 atau 1 = dead end
-        return 0;
-    }
-
-    private static int CountBits(int n)
-    {
-        int c = 0;
-        while (n != 0) { c += n & 1; n >>= 1; }
-        return c;
-    }
-
-    // -----------------------------------------------------------------------
-    // MESH HELPERS
-    // -----------------------------------------------------------------------
-
-    /// <summary>Square penuh di cell center c dengan half-extent h.</summary>
-    private void AddSquare(Vector3 c, float h,
-        List<Vector3> v, List<int> t, List<Vector2> u)
-    {
-        int b = v.Count;
-        // 4 vertex CCW dari bawah-kiri (SW), searah jarum jam dari atas
-        v.Add(new Vector3(c.x - h, c.y, c.z - h)); // 0 SW
-        v.Add(new Vector3(c.x + h, c.y, c.z - h)); // 1 SE
-        v.Add(new Vector3(c.x + h, c.y, c.z + h)); // 2 NE
-        v.Add(new Vector3(c.x - h, c.y, c.z + h)); // 3 NW
-
-        u.Add(new Vector2(0f, 0f));
-        u.Add(new Vector2(1f, 0f));
-        u.Add(new Vector2(1f, 1f));
-        u.Add(new Vector2(0f, 1f));
-
-        // Dua triangle, winding CW dari atas (Unity Y-up, front face Y+)
-        t.Add(b + 0); t.Add(b + 2); t.Add(b + 1); // SW, NE, SE
-        t.Add(b + 0); t.Add(b + 3); t.Add(b + 2); // SW, NW, NE
-    }
-
-    private void BuildMesh(List<Vector3> verts, List<int> tris, List<Vector2> uvs, string meshName)
-    {
-        // Unity mesh vertex limit = 65535 per sub-mesh untuk 16-bit index
-        // Split jika perlu (tiap square = 4 vert, 6 index)
-        const int MAX_VERTS = 65000;
-
-        int offset = 0;
-        int part   = 0;
-        while (offset < verts.Count)
-        {
-            int count    = Mathf.Min(MAX_VERTS, verts.Count - offset);
-            int triStart = (offset / 4) * 6; // 4 vert per quad → 6 index
-            int triCount = (count / 4) * 6;
-            triCount     = Mathf.Min(triCount, tris.Count - triStart);
-
-            var subVerts = verts.GetRange(offset, count);
-            var subUvs   = uvs.GetRange(offset, count);
-
-            // Re-index triangles relatif ke sub-mesh
-            var subTris = new List<int>(triCount);
-            for (int i = triStart; i < triStart + triCount; i++)
-                subTris.Add(tris[i] - offset);
-
-            var mesh = new Mesh { name = $"{meshName}_p{part}" };
-            mesh.SetVertices(subVerts);
-            mesh.SetTriangles(subTris, 0);
-            mesh.SetUVs(0, subUvs);
-            mesh.RecalculateNormals();
-            mesh.RecalculateBounds();
-
-            var go = new GameObject($"RoadMeshPart_{part}");
-            go.transform.SetParent(parent.transform);
-            go.transform.localPosition = Vector3.zero;
-
-            var mf = go.AddComponent<MeshFilter>();
-            var mr = go.AddComponent<MeshRenderer>();
-            mf.sharedMesh    = mesh;
-            mr.sharedMaterial = roadMat;
-
-            // Daftarkan ke dictionary dengan key dummy agar Reset bisa hapus
-            roadDictionary[new Vector3Int(-(99999 + part), 0, 0)] = go;
-
-            offset += count;
-            part++;
-        }
+        if (roadDictionary.TryGetValue(pos, out var go) && go != null)
+            Object.DestroyImmediate(go);
+        roadDictionary.Remove(pos);
+        gridSnapshot.Remove(pos);
     }
 
     // -----------------------------------------------------------------------
@@ -230,6 +347,8 @@ public class RoadGridHelper
 
         roadDictionary.Clear();
         fixRoadCandidates.Clear();
-        gridSnapshot.Clear(); // FIX: wajib clear agar generate ulang tidak campur data lama
+        gridSnapshot.Clear();
+        ringCells.Clear();
+        ringMinX = ringMaxX = ringMinZ = ringMaxZ = 0;
     }
 }
