@@ -38,23 +38,14 @@ public class CityGeneratorEditor : Editor
         EditorGUILayout.EndHorizontal();
 
         // ---------------------------------------------------------------
-        // Mode description
+        // Pipeline description
         // ---------------------------------------------------------------
         if (rn != null)
         {
             EditorGUILayout.Space(4);
-            string modeDesc = rn.generationMode switch
-            {
-                RoadNetwork.RoadGenerationMode.OrthogonalGrid =>
-                    "OrthogonalGrid: Grid H×V klasik. Cepat, rapi, cocok untuk kota modern.",
-                RoadNetwork.RoadGenerationMode.LSystem =>
-                    "LSystem: Jalan organik dari L-System turtle. Cocok untuk kota medieval/suburban.",
-                RoadNetwork.RoadGenerationMode.RingAndLSystem =>
-                    "RingAndLSystem: Ring road mengelilingi kota + L-System organik di interior.",
-                _ => ""
-            };
-            if (!string.IsNullOrEmpty(modeDesc))
-                EditorGUILayout.HelpBox(modeDesc, MessageType.None);
+            EditorGUILayout.HelpBox(
+                "RingAndLSystem: Ring road mengelilingi kota + L-System organik di interior.",
+                MessageType.None);
         }
 
         // ---------------------------------------------------------------

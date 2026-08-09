@@ -4,22 +4,22 @@ using UnityEngine;
 /// <summary>
 /// RoadAddOnDecorator — menempatkan perlengkapan jalan (traffic light &
 /// streetlight) pada grid tile yang SUDAH di-FixRoad (FixRoad() selesai,
-/// roadDictionary berisi prefab final).
+/// roadDictionary berisi prefab final). Mengikuti pendekatan SVS (Procedural
+/// Town): perlengkapan hanya di cell yang memang layak, bukan asal sebar.
 ///
 /// Traffic light (wajib memiliki komponen TrafficLightBehavior):
-///   - Per 4-way (+) dan 3-way (T): dipilih acak dari semua traffic light prefab
-///     yang tersedia, 1 per selisih mask terbatas (selisih = jumlah lengan
-///     koneksi). Ukuran 1 cell, offset (0,0,0).
-///   - Di interior: traffic light diletakkan di/sekitar seedPositions yang
-///     masih berupa jalan.
+///   - Hanya di junction 3-way (T) dan 4-way (+), 1 per cell, rotasi
+///     menghadap lengan koneksi. Corner (L), straight (I), dan end (O)
+///     TIDAK dapat lampu — SVS style.
 ///
 /// Streetlight (wajib memiliki komponen StreetlightBehavior):
-///   - Di sepanjang ring & spoke (kelipatan 3 cell dari ujung) + di seluruh
-///     jalan interior (kelipatan 3 cell dari tepi kiri grid).
-///   - Posisi: cell jalan dengan tetangga N/S (vertikal) atau E/W (horizontal),
-///     offset 0.4 cell ke tepi. Setiap 3 cell sekali; pilih 1 dari (offset kiri/
-///     kanan) secara acak. Sisi kiri (W/S) untuk vertikal/horizontal.
-///   - Hanya 1 per cell — set menghindari duplikat.
+///   - Hanya di segmen LURUS (2 lengan N/S atau E/W), interval 3 cell
+///     SEPANJANG arah jalan (jalan vertikal → interval di z, horizontal →
+///     interval di x) — bukan kolom grid. Junction/corner/end di-skip.
+///   - Ring & spoke memakai interval dari ujung/pusat.
+///   - Posisi: offset 0.4 cell ke tepi jalan (kiri W untuk vertikal,
+///     bawah S untuk horizontal), rotasi mengikuti arah jalan.
+///   - Hanya 1 per cell — set menghindari duplikat + tetangga (±1).
 /// </summary>
 public class RoadAddOnDecorator
 {
@@ -31,6 +31,10 @@ public class RoadAddOnDecorator
 
     private readonly List<GameObject> trafficLightPrefabs = new List<GameObject>();
     private readonly List<GameObject> streetlightPrefabs  = new List<GameObject>();
+
+    /// <summary>Jumlah aktual yang berhasil di-place — untuk log verifikasi.</summary>
+    public int TrafficLightCount { get; private set; }
+    public int StreetlightCount  { get; private set; }
 
     public RoadAddOnDecorator(RoadGridHelper gridHelper, Transform parent, float tileSize)
     {
@@ -62,7 +66,7 @@ public class RoadAddOnDecorator
     public bool HasStreetlights  => streetlightPrefabs.Count  > 0;
 
     // -----------------------------------------------------------------------
-    // TRAFFIC LIGHT
+    // TRAFFIC LIGHT — hanya junction 3-way (T) dan 4-way (+)
     // -----------------------------------------------------------------------
 
     /// <summary>
@@ -71,6 +75,7 @@ public class RoadAddOnDecorator
     /// </summary>
     public void PlaceTrafficLights(HashSet<Vector3Int> snapshot)
     {
+        TrafficLightCount = 0;
         if (trafficLightPrefabs.Count == 0) return;
 
         foreach (var cell in snapshot)
@@ -85,65 +90,37 @@ public class RoadAddOnDecorator
             var prefab = PickRandom(trafficLightPrefabs);
             var rot = RotationTowardArms(mask);
             SpawnAddOn(prefab, cell, rot, tile.transform, "TrafficLight");
-        }
-    }
-
-    /// <summary>
-    /// Letakkan traffic light di/sekitar seed L-System yang masih jalan —
-    /// untuk interior yang tidak punya junction rapat. Interval 2 cell.
-    /// </summary>
-    public void PlaceTrafficLightsAtSeeds(List<Vector3Int> seedPositions,
-                                          HashSet<Vector3Int> snapshot)
-    {
-        if (trafficLightPrefabs.Count == 0) return;
-
-        var placed = new HashSet<Vector3Int>();
-        foreach (var seed in seedPositions)
-        {
-            if (placed.Contains(seed)) continue;
-            placed.Add(seed);
-
-            var cell = seed;
-            for (int attempt = 0; attempt < 4; attempt++)
-            {
-                if (snapshot.Contains(cell))
-                {
-                    var tile = gridHelper.GetTileAt(cell);
-                    if (tile != null)
-                    {
-                        var prefab = PickRandom(trafficLightPrefabs);
-                        SpawnAddOn(prefab, cell, Quaternion.identity, tile.transform, "TrafficLight");
-                        break;
-                    }
-                }
-                cell += new Vector3Int(2, 0, 0); // geser 2 cell — cari jalan terdekat
-            }
+            TrafficLightCount++;
         }
     }
 
     // -----------------------------------------------------------------------
-    // STREETLIGHT
+    // STREETLIGHT — hanya segmen lurus, interval searah jalan
     // -----------------------------------------------------------------------
 
-    /// <summary>Letakkan streetlight di seluruh snapshot pada interval tetap.</summary>
+    /// <summary>Letakkan streetlight di sepanjang segmen lurus dengan interval tetap.</summary>
     public void PlaceStreetlights(HashSet<Vector3Int> snapshot)
     {
+        StreetlightCount = 0;
         if (streetlightPrefabs.Count == 0) return;
         var placed = new HashSet<Vector3Int>();
 
         foreach (var cell in snapshot)
         {
             if (placed.Contains(cell)) continue;
-            if (!ShouldPlaceStreetlight(cell)) continue;
+
+            // Hanya segmen LURUS: 2 lengan berhadapan (N/S atau E/W).
+            // Junction (+/T), corner (L), dan end (O) di-skip — SVS style.
+            int mask = gridHelper.GetMaskAt(cell);
+            if (!IsStraightSegment(mask)) continue;
+
+            if (!ShouldPlaceStreetlight(cell, mask)) continue;
 
             var tile = gridHelper.GetTileAt(cell);
             if (tile == null) continue;
 
-            bool vertical = HasNeighbor(snapshot, cell, 0, 1)
-                         && HasNeighbor(snapshot, cell, 0, -1);
-            bool horizontal = HasNeighbor(snapshot, cell, 1, 0)
-                           && HasNeighbor(snapshot, cell, -1, 0);
-            if (!vertical && !horizontal) continue; // bukan jalan lurus
+            bool vertical   = (mask & 1) != 0 && (mask & 4) != 0; // N && S
+            bool horizontal = (mask & 2) != 0 && (mask & 8) != 0; // E && W
 
             var prefab = PickRandom(streetlightPrefabs);
             // Offset 0.4 cell ke tepi; vertikal → kiri (W), horizontal → bawah (S)
@@ -157,6 +134,7 @@ public class RoadAddOnDecorator
 
             SpawnAddOn(prefab, cell, rot, tile.transform, "Streetlight",
                        localOffset: offset);
+            StreetlightCount++;
 
             // Tandai 3 cell di sekitarnya supaya tidak berdekatan
             for (int i = -1; i <= 1; i++)
@@ -166,15 +144,26 @@ public class RoadAddOnDecorator
     }
 
     /// <summary>
-    /// Rule penempatan: kelipatan STREETLIGHT_INTERVAL dari titik terdekat
-    /// pada ring / spoke / tepi kiri grid.
+    /// Rule penempatan: kelipatan STREETLIGHT_INTERVAL.
+    ///   - Ring: dari ujung baris/kolom ring.
+    ///   - Spoke: dari pusat kota.
+    ///   - Interior: SEPANJANG arah jalan (vertikal → z, horizontal → x),
+    ///     bukan kolom grid — supaya jalan vertikal tidak kebetulan kosong
+    ///     total hanya karena kolomnya bukan kelipatan 3.
     /// </summary>
-    private bool ShouldPlaceStreetlight(Vector3Int cell)
+    private bool ShouldPlaceStreetlight(Vector3Int cell, int mask)
     {
         // Di sepanjang ring — kelipatan 3 dari ujung baris/kolom
         if (gridHelper.IsRingCell(cell.x, cell.z))
-            return (cell.x - gridHelper.RingMinX) % (int)STREETLIGHT_INTERVAL == 0
-                || (cell.z - gridHelper.RingMinZ) % (int)STREETLIGHT_INTERVAL == 0;
+        {
+            bool topBottom = cell.z == gridHelper.RingMinZ || cell.z == gridHelper.RingMaxZ;
+            bool leftRight = cell.x == gridHelper.RingMinX || cell.x == gridHelper.RingMaxX;
+            if (topBottom)
+                return (cell.x - gridHelper.RingMinX) % (int)STREETLIGHT_INTERVAL == 0;
+            if (leftRight)
+                return (cell.z - gridHelper.RingMinZ) % (int)STREETLIGHT_INTERVAL == 0;
+            return false;
+        }
 
         // Di sepanjang spoke — kelipatan 3 dari pusat
         if (cell.x == 0 && cell.z != 0)
@@ -182,8 +171,24 @@ public class RoadAddOnDecorator
         if (cell.z == 0 && cell.x != 0)
             return Mathf.Abs(cell.x) % (int)STREETLIGHT_INTERVAL == 0;
 
-        // Interior lain — kelipatan 3 dari tepi kiri grid
-        return cell.x % (int)STREETLIGHT_INTERVAL == 0;
+        // Interior — interval sepanjang arah jalan
+        bool vertical   = (mask & 1) != 0 && (mask & 4) != 0;
+        bool horizontal = (mask & 2) != 0 && (mask & 8) != 0;
+        if (vertical)
+            return Mathf.Abs(cell.z) % (int)STREETLIGHT_INTERVAL == 0;
+        if (horizontal)
+            return Mathf.Abs(cell.x) % (int)STREETLIGHT_INTERVAL == 0;
+        return false;
+    }
+
+    /// <summary>Segmen lurus = tepat 2 lengan berhadapan (N/S atau E/W).</summary>
+    private static bool IsStraightSegment(int mask)
+    {
+        bool n = (mask & 1) != 0, e = (mask & 2) != 0;
+        bool s = (mask & 4) != 0, w = (mask & 8) != 0;
+        bool vertical   = n && s && !e && !w;
+        bool horizontal = e && w && !n && !s;
+        return vertical || horizontal;
     }
 
     // -----------------------------------------------------------------------
@@ -213,10 +218,6 @@ public class RoadAddOnDecorator
             if ((mask & bit) != 0) c++;
         return c;
     }
-
-    private static bool HasNeighbor(HashSet<Vector3Int> snap, Vector3Int cell,
-                                    int dx, int dz) =>
-        snap.Contains(cell + new Vector3Int(dx, 0, dz));
 
     private static GameObject PickRandom(List<GameObject> list) =>
         list[Random.Range(0, list.Count)];

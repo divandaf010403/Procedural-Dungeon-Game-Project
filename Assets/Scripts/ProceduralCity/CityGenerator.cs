@@ -5,12 +5,9 @@ using System.Collections.Generic;
 /// Main controller untuk procedural city generation.
 /// Fokus saat ini: road generation.
 ///
-/// ROAD GENERATION MODES (diatur di RoadNetwork component):
-/// - OrthogonalGrid  : Grid H×V klasik, cepat dan rapi.
-/// - LSystem         : Turtle graphics L-System dari pusat kota.
-///   Single origin + length decay → connected by design.
-///   Preset: OrganicCity, ManhattanGrid, HighwayAndAlley, RadialSprawl, Custom.
-/// - RingAndLSystem  : Ring road mengelilingi kota + L-System + 4 spoke ke ring.
+/// ROAD PIPELINE (RingAndLSystem — satu-satunya mode):
+/// Ring road mengelilingi kota + 4 spoke ke pusat + L-System organic di interior
+/// (multi-seed, clearance, BFS cleanup, connectNearbyEnds).
 ///
 /// WORKFLOW:
 /// 1. RoadNetwork.GenerateRoads() → jalan
@@ -119,11 +116,7 @@ public class CityGenerator : MonoBehaviour
         return comp;
     }
 
-    private string GetRoadMode()
-    {
-        var rn = GetComponent<RoadNetwork>();
-        return rn != null ? rn.generationMode.ToString() : "Unknown";
-    }
+    private string GetRoadMode() => "RingAndLSystem";
 
     private void OnDrawGizmosSelected()
     {
