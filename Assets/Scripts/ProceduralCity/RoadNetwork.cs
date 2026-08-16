@@ -40,26 +40,23 @@ public class RoadNetwork : MonoBehaviour
     // Road spacing settings
     // -----------------------------------------------------------------------
     [Range(0f, 1f)]
-    [Tooltip("Probabilitas cabang '[...]' L-System benar-benar tumbuh (dipakai di PlaceSegmentsWithDecay case '['). Nilai efektifnya dikunci minimal 0.6 di script (nilai scene yang lebih kecil diabaikan) supaya interior terisi; naikkan ke 0.8+ untuk kota lebih rimbun.")]
-    public float lSystemBranchChance = 0.15f;
+    [Tooltip("Probabilitas cabang '[...]' L-System benar-benar tumbuh. 0.2–0.4 = kota lapang (blok lebih besar, lebih banyak lahan # untuk bangunan). 0.5–0.7 = kota padat. Nilai di bawah 0.2 dikunci ke 0.2 di script.")]
+    public float lSystemBranchChance = 0.3f;
 
-    [Tooltip("Jarak minimal antar jalan dalam cell (dipakai PathMinClearance). 2 = jalan baru minimal 2 cell dari jalan lama → ada blok kosong yang terbaca. 1 = tanpa batasan → interior padat seperti anyaman.")]
-    public int minimumDistanceBetweenRoads = 2;
+    [Tooltip("Jarak minimal antar jalan dalam cell (dipakai PathMinClearance). 3 = blok cukup lebar (~3 cell kosong antar jalan) → persimpangan jarang, terasa seperti jalan kota nyata. 2 = blok kecil → terlalu banyak simpang. 4+ = kota sangat longgar.")]
+    public int minimumDistanceBetweenRoads = 3;
 
     // -----------------------------------------------------------------------
     // L-System settings
     // -----------------------------------------------------------------------
     [Header("L-System Road Settings")]
 
-    [Tooltip("Preset L-System yang dipakai.\nCustom = gunakan axiom/rules custom di bawah.")]
-    public LSystemPreset lSystemPreset = LSystemPreset.OrganicCity;
-
     [Tooltip("Panjang 1 step turtle dalam world units. 0 = auto (dihitung dari citySize dan tileSize).")]
     public float lSystemStepSize = 0f;
 
     [Range(1, 8)]
-    [Tooltip("Iterasi ekspansi L-System. Lebih tinggi = lebih banyak jalan, lebih lambat.")]
-    public int lSystemIterations = 4;
+    [Tooltip("Iterasi ekspansi L-System. 3 = kepadatan sehat (cukup jalan, cukup lahan #). 4+ = terlalu padat, blok # menghilang.")]
+    public int lSystemIterations = 3;
 
     [Range(4, 16)]
     [Tooltip("Jarak antar seed L-System (dalam cell). seedPerSide dihitung = innerSize / nilai ini (dipaksa genap, dibatasi 2..12) sehingga kepadatan konsisten di semua ukuran kota. Nilai besar = interior lebih jarang. Default 8 ≈ 1 seed tiap 8 cell.")]
@@ -68,12 +65,6 @@ public class RoadNetwork : MonoBehaviour
     [Range(0f, 1f)]
     [Tooltip("Probabilitas skip rule per-karakter (variasi organik). Nilai efektifnya dibatasi maksimal 0.2 di script supaya pohon tidak terlalu tipis (nilai scene yang lebih besar diabaikan).")]
     public float lSystemChanceToIgnore = 0.3f;
-
-    [Tooltip("Custom axiom — hanya dipakai jika preset = Custom.")]
-    public string lSystemCustomAxiom = "X";
-
-    [Tooltip("Custom rules — hanya dipakai jika preset = Custom. Format: 'X=F[-FX]+FX'")]
-    public string[] lSystemCustomRules = new string[] { "X=F[-FX]+FX" };
 
     // -----------------------------------------------------------------------
     // Road Prefabs (SVS style — assign di Inspector)
@@ -116,8 +107,16 @@ public class RoadNetwork : MonoBehaviour
     public int ringInsetCells = 7;
 
     [Range(4, 6)]
-    [Tooltip("Jumlah maksimum jalan interior yang boleh tersambung ke ring.")]
-    public int numberOfRingEntrances = 4;
+    [Tooltip("Jumlah maksimum jalan interior yang boleh tersambung ke ring. 6 = lebih banyak koneksi ke outer ring → traffic tidak menumpuk di 4 spoke saja.")]
+    public int numberOfRingEntrances = 6;
+
+    [Header("Inner Ring (Jalan Lingkar Dalam)")]
+    [Tooltip("Tambah ring kedua di dalam outer ring — membagi kota menjadi zona dalam dan zona luar. Meningkatkan konektivitas secara dramatis: kendaraan bisa keliling kota tanpa harus masuk jauh ke spoke.")]
+    public bool enableInnerRing = true;
+
+    [Range(2, 10)]
+    [Tooltip("Inset inner ring dari OUTER ring (dalam cell). 4 = inner ring 4 cell dari outer ring ke arah pusat. Default 4 → inner ring di ~60% radius outer ring.")]
+    public int innerRingInsetCells = 4;
 
     [Tooltip("Jaring pengaman: hapus sisa jalan interior yang benar-benar tidak bisa disambung ke ring/spoke (biasanya 0, karena ConnectDisconnectedToCore sudah menyambungkan komponen terisolasi lebih dulu).")]
     public bool removeDisconnectedRoads = true;
@@ -126,8 +125,8 @@ public class RoadNetwork : MonoBehaviour
     public bool connectNearbyEnds = true;
 
     [Range(2, 20)]
-    [Tooltip("Jarak maksimum (cell) antara dua ujung jalan yang boleh disambung connectNearbyEnds. Kecil (4-5) = loop lokal, blok lebih besar; besar = banyak celah tertutup → padat.")]
-    public int connectEndsMaxDistance = 5;
+    [Tooltip("Jarak maksimum (cell) antara dua ujung jalan yang boleh disambung connectNearbyEnds. 2 = hanya sambung dead end yang benar-benar berdekatan → sedikit loop, banyak lahan # untuk bangunan. 3+ = lebih banyak loop → interior lebih padat.")]
+    public int connectEndsMaxDistance = 2;
 
     // -----------------------------------------------------------------------
     // Void Fill Settings (lapisan kedua L-System)
@@ -137,7 +136,7 @@ public class RoadNetwork : MonoBehaviour
     public bool enableSecondLayerFill = true;
 
     [Range(16, 256)]
-    [Tooltip("Ukuran minimum komponen kosong (cell) yang diisi lapisan kedua. 64 ≈ blok kosong 8×8 cell. Komponen di bawah ini dibiarkan sebagai blok kota normal.")]
+    [Tooltip("Tidak lagi dipakai langsung — ukuran void minimum sekarang dihitung otomatis proporsional terhadap ukuran kota (lihat scaledVoidMinCells di ComputeScaledParams). Field ini dipertahankan untuk kompatibilitas scene lama.")]
     public int secondLayerMinVoidCells = 64;
 
     [Tooltip("Batas maksimum seed ekstra per generate (pengaman performa). Nilai efektifnya minimal 250 di script — scene bisa menyimpan 100 dari versi lama.")]
@@ -156,6 +155,72 @@ public class RoadNetwork : MonoBehaviour
 
     // Nilai efektif kepadatan L-System (dikunci di script, lihat PlaceLSystemTiles)
     private float   branchChanceEffective = 0.6f;
+
+    // -----------------------------------------------------------------------
+    // Scaled params — dihitung sekali di ComputeScaledParams() saat generate.
+    // Semua nilai proporsional terhadap interiorWidth (lebar interior ring),
+    // TIDAK hardcode per ukuran kota. Berlaku untuk citySize berapapun.
+    // -----------------------------------------------------------------------
+    private int   scaledEffMargin;    // clearance L-System antar jalan (cell)
+    private int   scaledNearBand;     // zona "dekat ring" yang ditolak paralel (cell)
+    private int   scaledVoidMinCells; // ukuran void minimum yang diisi layer 2
+    private int   scaledPass2MinComp; // ukuran komponen minimum di pass 2
+    private int   scaledPass2MaxSeeds; // batas maksimum seed pass-2 (proporsional)
+
+    /// <summary>
+    /// Hitung semua parameter yang bergantung pada ukuran grid secara proporsional.
+    /// Dipanggil sekali setelah ring bounds diketahui (sesudah GenerateRingRoad).
+    /// Rumus: nilai = Mathf.RoundToInt(interiorWidth * rasio), di-clamp ke batas wajar.
+    ///
+    /// interiorWidth = ringMaxX - ringMinX (lebar interior ring dalam cell).
+    /// Contoh: citySize 1000 → interiorW≈4, citySize 1500 → ≈22,
+    ///         citySize 2000 → ≈34, citySize 3000 → ≈72.
+    /// </summary>
+    private void ComputeScaledParams()
+    {
+        int interiorW = ringMaxX - ringMinX; // lebar interior (cell)
+
+        // effMargin: clearance antar jalan baru dengan jalan lama.
+        // ~12% dari interior supaya blok cukup lebar untuk bangunan,
+        // min 2, max 3 (bukan 4 — margin 4 menghasilkan blok 25+ cell yang terlalu besar).
+        scaledEffMargin = Mathf.Clamp(
+            Mathf.RoundToInt(interiorW * 0.12f), 2, 3);
+        // Inspector minimumDistanceBetweenRoads = batas ATAS — user bisa paksa lebih rapat,
+        // tapi tidak bisa memaksa lebih longgar dari auto-scale.
+        scaledEffMargin = Mathf.Min(scaledEffMargin, minimumDistanceBetweenRoads);
+
+        // nearBand: lebar zona "terlalu dekat ring" yang menolak segmen paralel.
+        // ~4% dari interior, min 1, max 3.
+        scaledNearBand = Mathf.Clamp(
+            Mathf.RoundToInt(interiorW * 0.04f), 1, 3);
+
+        // voidMinCells: ukuran void minimum yang diisi layer 2.
+        // ~3% dari luas interior (interiorW²) — lebih konservatif dari sebelumnya
+        // supaya pass-2 hanya mengisi void besar, tidak mengisi semua blok kecil.
+        // min 16 cell (4×4), max 300.
+        int interiorArea = interiorW * interiorW;
+        scaledVoidMinCells = Mathf.Clamp(
+            Mathf.RoundToInt(interiorArea * 0.03f), 16, 300);
+
+        // pass2MinComp: ukuran komponen minimum untuk pass kedua void fill.
+        // ~1% dari luas interior, min 9 (3×3 block), max 100.
+        // Lebih besar dari sebelumnya supaya blok kecil dibiarkan kosong (= lahan gedung).
+        scaledPass2MinComp = Mathf.Clamp(
+            Mathf.RoundToInt(interiorArea * 0.01f), 9, 100);
+
+        // pass2MaxSeeds: batas maksimum seed pass-2 supaya grid kecil tidak
+        // dibanjiri jalan. ~interiorW / 6, min 1, max 20.
+        // citySize 1000 (interiorW≈4)  → 1 seed max
+        // citySize 1500 (interiorW≈22) → 3 seed max
+        // citySize 2000 (interiorW≈34) → 5 seed max
+        // citySize 3000 (interiorW≈72) → 12 seed max
+        scaledPass2MaxSeeds = Mathf.Clamp(
+            Mathf.RoundToInt(interiorW / 6f), 1, 20);
+
+        Debug.Log($"[RoadNetwork] ScaledParams: interiorW={interiorW}, "
+                + $"effMargin={scaledEffMargin}, nearBand={scaledNearBand}, "
+                + $"voidMin={scaledVoidMinCells}, pass2Min={scaledPass2MinComp}, pass2MaxSeeds={scaledPass2MaxSeeds}");
+    }
 
     private RoadGridHelper gridHelper;
 
@@ -244,7 +309,7 @@ public class RoadNetwork : MonoBehaviour
         // tile tidak z-fighting dengan ground plane (y=0).
         var roadContainer = new GameObject("RoadTiles");
         roadContainer.transform.SetParent(cityGenerator.transform);
-        roadContainer.transform.localPosition = new Vector3(0f, 0.31f, 0f);
+        roadContainer.transform.localPosition = new Vector3(0f, 0.11f, 0f);
         cityGenerator.RegisterSpawnedObject(roadContainer);
 
         gridHelper = new RoadGridHelper(roadContainer.transform, cellSize);
@@ -272,9 +337,12 @@ public class RoadNetwork : MonoBehaviour
         // Pipeline tunggal (RingAndLSystem):
         //   ring road → spokes → L-System interior → cleanup → connectNearbyEnds
         GenerateRingRoad();
+        ComputeScaledParams(); // hitung semua param proporsional setelah ring bounds diketahui
         if (enableInteriorRoads)
         {
             PlaceSpokesToRing(transform.position);   // jalan utama/radial
+            if (enableInnerRing)
+                PlaceInnerRing();                    // ring lingkar dalam (Arterial)
             PlaceLSystemTiles(effectiveLsStep);      // L-System interior
             if (enableSecondLayerFill)
                 PlaceSecondLayerFill(effectiveLsStep); // isi void besar (lapisan kedua)
@@ -483,9 +551,12 @@ public class RoadNetwork : MonoBehaviour
         gridMin = -halfCells;                // -25
         gridMax =  halfCells;                // +25 (boundary eksklusif)
 
-        // Ring default di -18..18 — inset 7 cell dari tepi kota.
-        // Dipakai juga oleh L-System spokes (ringTarget) supaya semua konsisten.
-        int inset = Mathf.Clamp(ringInsetCells, 2, halfCells - 2);
+        // Ring inset: proporsional ~30% dari halfCells supaya interior selalu punya
+        // ruang yang cukup untuk jalan dan bangunan, apapun citySize-nya.
+        // Inspector ringInsetCells dipakai sebagai batas atas saja (user bisa perkecil ring).
+        // Minimal 2 cell, maksimal 40% halfCells supaya interior tidak hilang.
+        int autoInset = Mathf.RoundToInt(halfCells * 0.30f);
+        int inset = Mathf.Clamp(Mathf.Min(ringInsetCells, autoInset), 2, halfCells - 4);
         ringMinX = ringMinZ = gridMin + inset; // -18
         ringMaxX = ringMaxZ = gridMax - inset; // +18
         if (gridHelper != null)
@@ -507,12 +578,13 @@ public class RoadNetwork : MonoBehaviour
         int len = ringMaxX - ringMinX; // sama dengan ringMaxZ - ringMinZ (persegi)
 
         // Daftarkan 4 segmen ke roads list supaya district/buildings aware
+        // hierarchy 1 = Arterial (ring road adalah jalan utama kota)
         float wMin = CellToWorld(ringMinX);
         float wMax = CellToWorld(ringMaxX);
-        roads.Add(new RoadSegment(new Vector3(wMin, 0, wMin), new Vector3(wMax, 0, wMin), roadWidth)); // S
-        roads.Add(new RoadSegment(new Vector3(wMin, 0, wMax), new Vector3(wMax, 0, wMax), roadWidth)); // N
-        roads.Add(new RoadSegment(new Vector3(wMin, 0, wMin), new Vector3(wMin, 0, wMax), roadWidth)); // W
-        roads.Add(new RoadSegment(new Vector3(wMax, 0, wMin), new Vector3(wMax, 0, wMax), roadWidth)); // E
+        roads.Add(new RoadSegment(new Vector3(wMin, 0, wMin), new Vector3(wMax, 0, wMin), roadWidth, 1)); // S
+        roads.Add(new RoadSegment(new Vector3(wMin, 0, wMax), new Vector3(wMax, 0, wMax), roadWidth, 1)); // N
+        roads.Add(new RoadSegment(new Vector3(wMin, 0, wMin), new Vector3(wMin, 0, wMax), roadWidth, 1)); // W
+        roads.Add(new RoadSegment(new Vector3(wMax, 0, wMin), new Vector3(wMax, 0, wMax), roadWidth, 1)); // E
 
         int expected = (ringMaxX - ringMinX + 1) * 4 - 4; // 2*W + 2*H - 4 sudut ganda
         int actual   = ringCells.Count;
@@ -580,12 +652,11 @@ public class RoadNetwork : MonoBehaviour
         var lsys = BuildLSystemFromPreset();
         lsys.Init(cityGenerator.randomSeed);
 
-        // Density tuning (script-side): scene bisa menyimpan nilai lama yang
-        // membuat interior terlalu jarang (branch 0.15 = 85% cabang di-skip,
-        // ignore 0.3). Nilai efektif di-clamp ke rentang sehat supaya hasil
-        // tetap kota berisi apa pun nilai di scene.
+        // Density tuning (script-side): floor branch diturunkan ke 0.3 supaya
+        // Inspector bisa mengontrol kepadatan secara nyata. 0.3–0.5 = kota
+        // lapang (blok lebih besar, persimpangan lebih sedikit). 0.6–0.8 = padat.
         float effIgnore = Mathf.Clamp(lSystemChanceToIgnore, 0.05f, 0.2f);
-        branchChanceEffective = Mathf.Clamp(lSystemBranchChance, 0.6f, 1f);
+        branchChanceEffective = Mathf.Clamp(lSystemBranchChance, 0.2f, 1f);
         lsys.chanceToIgnore = effIgnore;
         lsys.iterations = Mathf.Clamp(lSystemIterations, 1, 4);
         Debug.Log($"[RoadNetwork] L-System tuning: branch={branchChanceEffective:F2} (scene {lSystemBranchChance:F2}), "
@@ -604,14 +675,12 @@ public class RoadNetwork : MonoBehaviour
         int innerSize = innerMax - innerMin; // ~32 untuk ring -18..18
 
         // Seed grid: seedPerSide = innerSize / lSystemSeedSpacing — proporsional
-        // dengan ukuran kota supaya kepadatan konsisten di semua preset
-        // (Small tidak jadi gumpalan, Huge tidak jarang). Dipaksa GENAP agar
-        // baris/kolom tengah tidak jatuh tepat di spoke/pusat (x=0 / z=0) yang
-        // mematikan pohon (fromCell = spoke → semua langkah pertama ditolak).
-        // MINIMUM 4 per sisi (16 pohon): dengan pohon terlalu sedikit (mis. 2×2)
-        // sisa jalan yang selamat bisa membentuk pola pinwheel seperti swastika
-        // di sekitar pusat — lebih banyak pohon mencegah pola itu mendominasi.
-        int seedPerSide = Mathf.Clamp(Mathf.RoundToInt(innerSize / (float)lSystemSeedSpacing), 4, 12);
+        // dengan ukuran kota supaya kepadatan konsisten di semua preset.
+        // Dipaksa GENAP agar baris/kolom tengah tidak jatuh tepat di spoke/pusat.
+        // Minimum proporsional: max(2, innerSize/8) supaya grid kecil tidak
+        // dibanjiri pohon (grid 8x8 → min 2, grid 32x32 → min 4).
+        int seedPerSideMin = Mathf.Max(2, Mathf.RoundToInt(innerSize / 8f));
+        int seedPerSide = Mathf.Clamp(Mathf.RoundToInt(innerSize / (float)lSystemSeedSpacing), seedPerSideMin, 12);
         if (seedPerSide % 2 != 0) seedPerSide++;
         var rngLs = new System.Random(cityGenerator.randomSeed + 99);
         float spacing = (float)innerSize / seedPerSide;
@@ -646,7 +715,8 @@ public class RoadNetwork : MonoBehaviour
                 // spoke, semua langkah ditolak → L-System kosong.
                 PlaceSegmentsWithDecay(sentence,
                                        startCell.x * cellSize, startCell.z * cellSize,
-                                       startDir, effectiveStep, decay, origin);
+                                       startDir, effectiveStep, decay, origin,
+                                       hierarchy: 2); // Collector — L-System layer 1
                 seedPositions.Add(startCell);
                 seedCount++;
             }
@@ -705,13 +775,12 @@ public class RoadNetwork : MonoBehaviour
         int emptyProgress = 0; // iterasi beruntun tanpa progres (anti infinite loop)
         var rng2 = new System.Random(cityGenerator.randomSeed + 4242);
 
-        // Target void: berhenti mengisi begitu void terbesar < max(minVoidCells,
-        // 5% interior). JANGAN memaksakan < 64 cell di semua ukuran — itu yang
-        // membuat Huge jadi 57% jalan (anyaman, 175 fragmen < 4 cell) pada batch
-        // 07:26. 5% interior = 361 cell utk Huge, 130 utk Large, 64 utk Medium.
+        // Target void: berhenti mengisi begitu void terbesar < max(scaledVoidMinCells,
+        // 8% luas interior). 8% = titik tengah antara 5% (terlalu padat) dan 15%
+        // (terlalu jarang). Menghasilkan blok 4-8 cell — cukup untuk bangunan.
         int interiorCells = (ringMaxX - ringMinX - 1) * (ringMaxZ - ringMinZ - 1);
-        int voidTarget = Mathf.Max(secondLayerMinVoidCells,
-                                   Mathf.RoundToInt(interiorCells * 0.05f));
+        int voidTarget = Mathf.Max(scaledVoidMinCells,
+                                   Mathf.RoundToInt(interiorCells * 0.08f));
 
         // Nilai efektif minimal 250 — scene bisa menyimpan 100 dari versi lama.
         int maxSeeds = Mathf.Max(secondLayerMaxSeeds, 250);
@@ -747,7 +816,8 @@ public class RoadNetwork : MonoBehaviour
             int startDir = rng2.Next(0, 4);
             PlaceSegmentsWithDecay(sentence,
                                    seed.x * cellSize, seed.z * cellSize,
-                                   startDir, stepSize, decay, origin);
+                                   startDir, stepSize, decay, origin,
+                                   hierarchy: 3); // Local — L-System layer 2 (void fill)
             int placed = innerRoadCells.Count - before;
             if (placed < 8)
             {
@@ -761,7 +831,7 @@ public class RoadNetwork : MonoBehaviour
                 PlaceSegmentsWithDecay(sentence,
                                        seed.x * cellSize, seed.z * cellSize,
                                        rng2.Next(0, 4), stepSize, decay, origin,
-                                       clearanceMargin: 1);
+                                       clearanceMargin: 1, hierarchy: 3); // Local — layer 2 percobaan mini
                 lsys.iterations = normalIter;
                 placed = innerRoadCells.Count - before;
             }
@@ -779,6 +849,32 @@ public class RoadNetwork : MonoBehaviour
             seedsPlaced++;
         }
 
+        // Pass kedua — isi komponen void yang tersisa, dibatasi scaledPass2MaxSeeds.
+        // Proporsional terhadap ukuran kota supaya grid kecil tidak dibanjiri jalan.
+        {
+            var roadSnap = HasRoadSnapshot();
+            int passSeeds = 0;
+            foreach (var comp in FindEmptyInteriorComponents())
+            {
+                if (passSeeds >= scaledPass2MaxSeeds) break; // batas seed proporsional
+                if (comp.Count < scaledPass2MinComp) continue;
+                Vector3Int seed2 = DeepestCellInComponent(comp, roadSnap);
+                if (!IsInsideRingInterior(seed2)) continue;
+                lsys.Init(cityGenerator.randomSeed + 9000 + passSeeds * 3571);
+                lsys.iterations = 1;
+                string sent2 = lsys.Generate();
+                PlaceSegmentsWithDecay(sent2,
+                                       seed2.x * cellSize, seed2.z * cellSize,
+                                       rng2.Next(0, 4), stepSize, decay, origin,
+                                       clearanceMargin: 2, hierarchy: 3);
+                passSeeds++;
+                seedsPlaced++;
+                roadSnap = HasRoadSnapshot();
+            }
+            if (passSeeds > 0)
+                Debug.Log($"[RoadNetwork] SecondLayerFill pass-2: {passSeeds}/{scaledPass2MaxSeeds} seed di void sisa");
+        }
+
         // 4. Ukur sisa void terbesar + persentase terhadap luas interior
         int largestVoidAfter = 0;
         int emptyAfter = 0;
@@ -790,7 +886,7 @@ public class RoadNetwork : MonoBehaviour
         float pct = interiorCells > 0 ? 100f * largestVoidAfter / interiorCells : 0f;
 
         secondLayerSummary = $"SecondLayerFill: {seedsPlaced} seed ekstra di void "
-                + $"(target {voidTarget} cell = max({secondLayerMinVoidCells}, 5% interior)), "
+                + $"(target {voidTarget} cell = max({scaledVoidMinCells}, 5% interior)), "
                 + $"empty {emptyBefore} → {emptyAfter} cell, "
                 + $"void terbesar {largestVoidBefore} → {largestVoidAfter} cell ({pct:F1}% interior, target < 5%)";
         Debug.Log($"[RoadNetwork] {secondLayerSummary}");
@@ -906,7 +1002,8 @@ public class RoadNetwork : MonoBehaviour
                                         float startX, float startZ, int startDir,
                                         float baseStep, float decayFactor,
                                         Vector3 boundsOrigin,
-                                        int clearanceMargin = -1)
+                                        int clearanceMargin = -1,
+                                        int hierarchy = 2)
     {
         var   turtle  = new RoadTurtle(startX, startZ, startDir, baseStep);
         var   stack   = new Stack<(float x, float z, int dir, float step)>();
@@ -987,10 +1084,16 @@ public class RoadNetwork : MonoBehaviour
                         // jaringan inti (diabaikan oleh PathMinClearance) tidak menghalangi.
                         bool closeToNetwork = endsAtRing || endsAtSpoke
                                            || ringCells.Contains(fromCell) || spokeCells.Contains(fromCell);
-                        // clearanceMargin >= 1 meng-override jarak clearance
-                        // (1 = tanpa clearance — dipakai lapisan kedua utk mengisi
-                        // koridor sempit di void). -1 = pakai nilai Inspector.
-                        int effMargin = clearanceMargin >= 1 ? clearanceMargin : minimumDistanceBetweenRoads;
+                        // scaledEffMargin dihitung proporsional terhadap interiorWidth di ComputeScaledParams()
+                        int effMargin;
+                        if (clearanceMargin >= 1)
+                        {
+                            effMargin = clearanceMargin;
+                        }
+                        else
+                        {
+                            effMargin = scaledEffMargin;
+                        }
                         if (PathMinClearance(fromCell, toCell, dir, effMargin,
                                              skipsToRingSeparate: closeToNetwork))
                         {
@@ -1003,7 +1106,7 @@ public class RoadNetwork : MonoBehaviour
                         roads.Add(new RoadSegment(
                             new Vector3(fromCell.x * cellSize, 0, fromCell.z * cellSize),
                             new Vector3(toCell.x * cellSize,   0, toCell.z * cellSize),
-                            roadWidth));
+                            roadWidth, hierarchy));
 
                         // Catat semua cell interior (termasuk yang menyambung ring/spoke)
                         for (int i = 0; i <= len; i++)
@@ -1264,6 +1367,23 @@ public class RoadNetwork : MonoBehaviour
 
             return true; // ada jalan lain di dekat segmen
         }
+
+        // Fix "TT wall": tolak segmen yang PARALEL dengan outer ring dan
+        // berjarak ≤ scaledNearBand cell dari ring — proporsional terhadap
+        // ukuran interior, dihitung di ComputeScaledParams().
+        // Pengecualian: segmen yang berakhir di ring/spoke (koneksi sah).
+        if (!skipsToRingSeparate)
+        {
+            bool nearRingH = fromCell.z <= ringMinZ + scaledNearBand || fromCell.z >= ringMaxZ - scaledNearBand
+                          || toCell.z   <= ringMinZ + scaledNearBand || toCell.z   >= ringMaxZ - scaledNearBand;
+            bool nearRingV = fromCell.x <= ringMinX + scaledNearBand || fromCell.x >= ringMaxX - scaledNearBand
+                          || toCell.x   <= ringMinX + scaledNearBand || toCell.x   >= ringMaxX - scaledNearBand;
+            bool parallelToRingH = dir.x != 0 && nearRingH;
+            bool parallelToRingV = dir.z != 0 && nearRingV;
+            if (parallelToRingH || parallelToRingV)
+                return true; // tolak — paralel dengan ring, terlalu dekat tepi
+        }
+
         return false;
     }
 
@@ -1433,7 +1553,7 @@ public class RoadNetwork : MonoBehaviour
             roads.Add(new RoadSegment(
                 new Vector3(cx * cellSize, 0, cz * cellSize),
                 new Vector3(ringTarget.x * cellSize, 0, ringTarget.z * cellSize),
-                roadWidth));
+                roadWidth, 1)); // hierarchy 1 = Arterial (spoke = jalan utama radial)
 
             // Catat cell spoke sebagai jalan interior. Spoke TIDAK masuk
             // ringEntrances — kuota numberOfRingEntrances khusus untuk jalan
@@ -1451,6 +1571,85 @@ public class RoadNetwork : MonoBehaviour
         Debug.Log($"[RoadNetwork] Spokes: center=({cx},{cz}), ring X[{ringMinX}..{ringMaxX}] "
                 + $"Z[{ringMinZ}..{ringMaxZ}] — 4 spoke terpasang, kuota L-System "
                 + $"entrance tersisa {ringEntrances.Count}/{numberOfRingEntrances}");
+    }
+
+    // =======================================================================
+    // INNER RING — ring kedua di dalam outer ring (Arterial, hierarchy 1)
+    // Ditempatkan setelah spoke supaya spoke sudah ada sebagai anchor.
+    // Inner ring memotong 4 spoke → otomatis terbentuk 4 perempatan (+).
+    // =======================================================================
+
+    /// <summary>
+    /// Tempatkan ring persegi kedua di dalam outer ring.
+    /// Jarak dari outer ring ke inner ring = innerRingInsetCells cell.
+    /// Inner ring di-tag hierarchy 1 (Arterial) dan masuk innerRoadCells + spokeCells
+    /// supaya selamat dari BFS cleanup.
+    /// </summary>
+    private void PlaceInnerRing()
+    {
+        if (!enableInnerRing) return;
+
+        int cx = WorldToCell(transform.position.x);
+        int cz = WorldToCell(transform.position.z);
+
+        // Hitung batas inner ring — inset dari outer ring ke arah pusat.
+        // Auto-scale: untuk grid kecil, pakai inset lebih kecil supaya inner ring
+        // tetap punya ruang bermakna. Interior width = ringMaxX - ringMinX.
+        int interiorR = ringMaxX - cx; // jarak dari pusat ke outer ring (cell)
+        // Inset minimal 2, maksimal 40% dari jarak pusat-ke-ring, tidak lebih dari Inspector
+        int inset = Mathf.Clamp(
+            Mathf.Min(innerRingInsetCells, Mathf.FloorToInt(interiorR * 0.4f)),
+            2, interiorR - 3);
+        int irMinX = ringMinX + inset;
+        int irMaxX = ringMaxX - inset;
+        int irMinZ = ringMinZ + inset;
+        int irMaxZ = ringMaxZ - inset;
+
+        // Pastikan inner ring punya ruang minimal 4x4 cell
+        if (irMaxX - irMinX < 4 || irMaxZ - irMinZ < 4)
+        {
+            Debug.LogWarning($"[RoadNetwork] Inner ring skip — terlalu kecil "
+                           + $"({irMaxX - irMinX}x{irMaxZ - irMinZ} cell). "
+                           + $"Kurangi innerRingInsetCells.");
+            return;
+        }
+
+        // Tempatkan 4 sisi inner ring (cell-by-cell, sama seperti outer ring)
+        // Sisi S (Z=irMinZ): X dari irMinX ke irMaxX
+        for (int x = irMinX; x <= irMaxX; x++)
+            PlaceInnerRingCell(new Vector3Int(x, 0, irMinZ));
+        // Sisi N (Z=irMaxZ): X dari irMinX ke irMaxX
+        for (int x = irMinX; x <= irMaxX; x++)
+            PlaceInnerRingCell(new Vector3Int(x, 0, irMaxZ));
+        // Sisi W (X=irMinX): Z dari irMinZ+1 ke irMaxZ-1 (sudut sudah di-place)
+        for (int z = irMinZ + 1; z <= irMaxZ - 1; z++)
+            PlaceInnerRingCell(new Vector3Int(irMinX, 0, z));
+        // Sisi E (X=irMaxX): Z dari irMinZ+1 ke irMaxZ-1
+        for (int z = irMinZ + 1; z <= irMaxZ - 1; z++)
+            PlaceInnerRingCell(new Vector3Int(irMaxX, 0, z));
+
+        // Daftarkan 4 segmen RoadSegment (Arterial)
+        float wMinX = CellToWorld(irMinX);
+        float wMaxX = CellToWorld(irMaxX);
+        float wMinZ = CellToWorld(irMinZ);
+        float wMaxZ = CellToWorld(irMaxZ);
+        roads.Add(new RoadSegment(new Vector3(wMinX, 0, wMinZ), new Vector3(wMaxX, 0, wMinZ), roadWidth, 1)); // S
+        roads.Add(new RoadSegment(new Vector3(wMinX, 0, wMaxZ), new Vector3(wMaxX, 0, wMaxZ), roadWidth, 1)); // N
+        roads.Add(new RoadSegment(new Vector3(wMinX, 0, wMinZ), new Vector3(wMinX, 0, wMaxZ), roadWidth, 1)); // W
+        roads.Add(new RoadSegment(new Vector3(wMaxX, 0, wMinZ), new Vector3(wMaxX, 0, wMaxZ), roadWidth, 1)); // E
+
+        int totalCells = 2 * (irMaxX - irMinX + 1) + 2 * (irMaxZ - irMinZ - 1);
+        Debug.Log($"[RoadNetwork] Inner ring: X[{irMinX}..{irMaxX}] Z[{irMinZ}..{irMaxZ}], "
+                + $"~{totalCells} cells, inset={inset} dari outer ring");
+    }
+
+    /// <summary>Tempatkan satu cell inner ring — prefab, snapshot, innerRoadCells, spokeCells.</summary>
+    private void PlaceInnerRingCell(Vector3Int cell)
+    {
+        gridHelper.PlaceStreetPositions(cell, new Vector3Int(1, 0, 0), 1);
+        innerRoadCells.Add(cell);
+        // Masuk spokeCells supaya selamat dari BFS cleanup (dianggap jaringan inti)
+        spokeCells.Add(cell);
     }
 
     // =======================================================================
@@ -1885,7 +2084,8 @@ public class RoadNetwork : MonoBehaviour
     /// Place cell penghubung (path) sebagai jalan interior + RoadSegment
     /// per ruas lurus (path bisa lurus atau L = 2 ruas, sudut dipakai dua ruas).
     /// </summary>
-    private void PlaceConnectorPath(Vector3Int a, Vector3Int b, List<Vector3Int> path)
+    /// <param name="hierarchy">1=Arterial, 2=Collector, 3=Local (default)</param>
+    private void PlaceConnectorPath(Vector3Int a, Vector3Int b, List<Vector3Int> path, int hierarchy = 3)
     {
         foreach (var cell in path)
         {
@@ -1905,23 +2105,24 @@ public class RoadNetwork : MonoBehaviour
             var d = poly[i] - poly[i - 1];
             if (prevDir.HasValue && d != prevDir.Value)
             {
-                AddRoadSegmentRun(poly, runStart, i - 1);
+                AddRoadSegmentRun(poly, runStart, i - 1, hierarchy);
                 runStart = i - 1; // cell sudut dipakai kedua ruas
             }
             prevDir = d;
         }
-        AddRoadSegmentRun(poly, runStart, poly.Count - 1);
+        AddRoadSegmentRun(poly, runStart, poly.Count - 1, hierarchy);
     }
 
     /// <summary>Tambah satu RoadSegment dari poly[fromIdx] ke poly[toIdx] (ruas lurus).</summary>
-    private void AddRoadSegmentRun(List<Vector3Int> poly, int fromIdx, int toIdx)
+    /// <param name="hierarchy">1=Arterial, 2=Collector, 3=Local</param>
+    private void AddRoadSegmentRun(List<Vector3Int> poly, int fromIdx, int toIdx, int hierarchy = 2)
     {
         var s = poly[fromIdx];
         var e = poly[toIdx];
         roads.Add(new RoadSegment(
             new Vector3(s.x * cellSize, 0, s.z * cellSize),
             new Vector3(e.x * cellSize, 0, e.z * cellSize),
-            roadWidth));
+            roadWidth, hierarchy));
     }
 
     /// <summary>Snapshot gabungan ring ∪ inner — kebenaran jalan (mirip HasRoad).</summary>
@@ -2121,97 +2322,20 @@ public class RoadNetwork : MonoBehaviour
         Debug.Log($"[RoadNetwork] Road map exported → {file}");
     }
     /// Mengadaptasi pattern dari SVS LSystemGenerator (rootSentence + rules + iterationLimit).
+    /// Ruleset: jalan maju 2 step lalu bercabang sekali (kanan atau kiri, 50/50).
+    /// Hasilnya lebih panjang dan blok # lebih besar dibanding cabang ganda.
     /// </summary>
     private LSystemGenerator BuildLSystemFromPreset()
     {
         var lsys = new LSystemGenerator();
         lsys.iterations     = lSystemIterations;
-        lsys.chanceToIgnore = lSystemChanceToIgnore;
-
-        switch (lSystemPreset)
+        lsys.chanceToIgnore = Mathf.Clamp(lSystemChanceToIgnore, 0.05f, 0.2f);
+        lsys.axiom = "X";
+        lsys.rules = new LSystemGenerator.Rule[]
         {
-            // -----------------------------------------------------------------
-            // OrganicCity — dari SVS SimpleVisualizer default
-            // Axiom: X → F[-FX]+FX (percabangan 45° → dikuantisasi ke 90°)
-            // Menghasilkan jalan bercabang organik dengan dead-end
-            // -----------------------------------------------------------------
-            case LSystemPreset.OrganicCity:
-                lsys.axiom = "X";
-                lsys.rules = new LSystemGenerator.Rule[]
-                {
-                    new LSystemGenerator.Rule { input = 'X', output = "F[-FX]+FX",     chance = 1.0f },
-                };
-                break;
-
-            // -----------------------------------------------------------------
-            // ManhattanGrid — grid orthogonal rapat ala NYC
-            // Axiom: FX → F[+F]F[-F]FX (bercabang kanan-kiri di tiap step)
-            // Menghasilkan grid teratur dengan variasi jitter minimal
-            // -----------------------------------------------------------------
-            case LSystemPreset.ManhattanGrid:
-                lsys.axiom = "FX";
-                lsys.chanceToIgnore = 0.1f; // sedikit ignore → grid lebih rapi
-                lsys.rules = new LSystemGenerator.Rule[]
-                {
-                    new LSystemGenerator.Rule { input = 'X', output = "[+FX][-FX]FX", chance = 1.0f },
-                    new LSystemGenerator.Rule { input = 'F', output = "FF",            chance = 0.3f },
-                };
-                break;
-
-            // -----------------------------------------------------------------
-            // HighwayAndAlley — arterial road + gang sempit
-            // Axiom: FFF[+FF]FFF[-FF]FX (jalan panjang lurus, cabang pendek di sisi)
-            // Step panjang untuk main road, cabang pendek = gang/alley
-            // -----------------------------------------------------------------
-            case LSystemPreset.HighwayAndAlley:
-                lsys.axiom = "FFFX";
-                lsys.chanceToIgnore = 0.2f;
-                lsys.rules = new LSystemGenerator.Rule[]
-                {
-                    new LSystemGenerator.Rule { input = 'X', output = "FFF[+FX][-FX]X", chance = 1.0f },
-                    new LSystemGenerator.Rule { input = 'F', output = "FF",              chance = 0.15f },
-                };
-                break;
-
-            // -----------------------------------------------------------------
-            // RadialSprawl — jalan memancar dari pusat seperti kota Eropa
-            // 4 arah utama + diagonal dikuantisasi, menghasilkan pola bintang
-            // -----------------------------------------------------------------
-            case LSystemPreset.RadialSprawl:
-                lsys.axiom = "X";
-                lsys.chanceToIgnore = 0.25f;
-                lsys.rules = new LSystemGenerator.Rule[]
-                {
-                    new LSystemGenerator.Rule { input = 'X', output = "F[+FX]F[-FX]F[+FX]X", chance = 1.0f },
-                    new LSystemGenerator.Rule { input = 'F', output = "FF",                    chance = 0.2f },
-                };
-                break;
-
-            // -----------------------------------------------------------------
-            // Custom — pakai axiom/rules dari Inspector field
-            // -----------------------------------------------------------------
-            case LSystemPreset.Custom:
-            default:
-                lsys.axiom = lSystemCustomAxiom;
-                var customRules = new List<LSystemGenerator.Rule>();
-                if (lSystemCustomRules != null)
-                {
-                    foreach (var ruleStr in lSystemCustomRules)
-                    {
-                        // Parse format "X=F[-FX]+FX"
-                        if (string.IsNullOrEmpty(ruleStr)) continue;
-                        int eqIdx = ruleStr.IndexOf('=');
-                        if (eqIdx < 1 || eqIdx >= ruleStr.Length - 1) continue;
-                        char   inp = ruleStr[0];
-                        string outp = ruleStr.Substring(eqIdx + 1);
-                        customRules.Add(new LSystemGenerator.Rule
-                            { input = inp, output = outp, chance = 1.0f });
-                    }
-                }
-                lsys.rules = customRules.ToArray();
-                break;
-        }
-
+            new LSystemGenerator.Rule { input = 'X', output = "FF[+FX]X", chance = 0.5f },
+            new LSystemGenerator.Rule { input = 'X', output = "FF[-FX]X", chance = 0.5f },
+        };
         return lsys;
     }
 
@@ -2393,23 +2517,6 @@ public class RoadNetwork : MonoBehaviour
 }
 
 // ===========================================================================
-// ENUMS
-// ===========================================================================
-
-/// <summary>
-/// Preset L-System untuk berbagai karakter kota.
-/// Terinspirasi dari SVS Procedural Town example (LSystemGenerator + SimpleVisualizer).
-/// </summary>
-public enum LSystemPreset
-{
-    OrganicCity,    // Jalan bercabang organik — default SVS pattern X→F[-FX]+FX
-    ManhattanGrid,  // Grid rapat orthogonal ala NYC
-    HighwayAndAlley,// Arterial road panjang + gang pendek di sisi
-    RadialSprawl,   // Jalan memancar dari pusat seperti kota Eropa
-    Custom          // Pakai axiom/rules dari Inspector field
-}
-
-// ===========================================================================
 // DATA STRUCTS
 // ===========================================================================
 [System.Serializable]
@@ -2428,6 +2535,17 @@ public struct RoadSegment
         this.width     = width;
         this.path      = new List<Vector3> { start, end };
         this.hierarchy = 0;
+    }
+
+    // Overload dengan hierarchy eksplisit — dipakai ring (1), spoke (1),
+    // L-System layer-1 (2), layer-2 / connector (3).
+    public RoadSegment(Vector3 start, Vector3 end, float width, int hierarchy)
+    {
+        this.start     = start;
+        this.end       = end;
+        this.width     = width;
+        this.path      = new List<Vector3> { start, end };
+        this.hierarchy = hierarchy;
     }
 
     public RoadSegment(List<Vector3> path, float width, int hierarchy)

@@ -292,9 +292,17 @@ public class RoadGridHelper
     // HELPERS
     // -----------------------------------------------------------------------
 
-    /// <summary>Cell integer → world position center of cell.</summary>
-    public Vector3 CellToWorld(Vector3Int cell) =>
-        new Vector3(cell.x * tileWorldSize, 0f, cell.z * tileWorldSize);
+    /// <summary>
+    /// Cell integer → world position center of cell.
+    /// Y memakai posisi Y parent (local Y = 0 relatif container) — jadi jalan
+    /// ikut ketinggian cityGenerator/container. X/Z tetap grid world (tidak
+    /// terpengaruh rotasi/scale parent).
+    /// </summary>
+    public Vector3 CellToWorld(Vector3Int cell)
+    {
+        float y = parent != null ? parent.position.y : 0f;
+        return new Vector3(cell.x * tileWorldSize, y, cell.z * tileWorldSize);
+    }
 
     /// <summary>Bitmask koneksi cell (N=1,E=2,S=4,W=8) dari snapshot — untuk decorator.</summary>
     public int GetMaskAt(Vector3Int cell)
