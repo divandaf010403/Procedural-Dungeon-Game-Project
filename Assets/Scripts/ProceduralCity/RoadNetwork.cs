@@ -819,22 +819,8 @@ public class RoadNetwork : MonoBehaviour
                                    startDir, stepSize, decay, origin,
                                    hierarchy: 3); // Local — L-System layer 2 (void fill)
             int placed = innerRoadCells.Count - before;
-            if (placed < 8)
-            {
-                // Percobaan 2: pohon KECIL (iterasi 2) dengan clearance dimatikan
-                // (margin 1) — cukup untuk menembus koridor sempit & menutup loop,
-                // TANPA memadati seluruh void jadi anyaman (iterasi 4 + margin 1
-                // = 57% jalan di Huge pada batch 07:26). Iterasi dipulihkan
-                // setelahnya supaya seed berikutnya memakai ukuran normal.
-                int normalIter = lsys.iterations;
-                lsys.iterations = Mathf.Min(2, normalIter);
-                PlaceSegmentsWithDecay(sentence,
-                                       seed.x * cellSize, seed.z * cellSize,
-                                       rng2.Next(0, 4), stepSize, decay, origin,
-                                       clearanceMargin: 1, hierarchy: 3); // Local — layer 2 percobaan mini
-                lsys.iterations = normalIter;
-                placed = innerRoadCells.Count - before;
-            }
+            // Percobaan-2 clearanceMargin:1 dihapus — menonaktifkan clearance
+            // sepenuhnya sehingga jalan tumbuh tepat bersebelahan → TT cluster.
 
             // Tidak ada progres → coba komponen berikutnya (jangan break total:
             // komponen lain yang lebih kecil mungkin masih bisa diisi). Berhenti
